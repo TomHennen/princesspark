@@ -1,0 +1,26 @@
+{
+  "name": "princess-park",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "shot": "node tools/screenshot.mjs",
+    "net-test": "node tools/net-test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "three": "^0.170.0",
+    "trystero": "^0.26.0",
+    "vite": "^6.4.5"
+  },
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "playwright-core": "^1.50.0"
+  }
+}
