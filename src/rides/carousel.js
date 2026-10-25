@@ -4,11 +4,15 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
+import { makeTextBoard } from './shared/track.js';
 
 const TAU = Math.PI * 2;
 const GREEN = 0x1e6b3c, YELLOW = 0xf6d44a, GOLD = 0xd9a63a, CREAM = 0xfff3dc, WOOD = 0xb5834a;
 const PINK = 0xf48fb1, TEAL = 0x3bb8b0, RED = 0xc43a3f, DARK = 0x2b2420;
 const SPIN = TAU / 12;            // one revolution per 12 s
+const BOB = 0.3;                  // animal bob amplitude
+// the rider's unicorn (index 1) and the horses either side of it, nearest first, for remote riders
+const PEER_ORDER = [2, 0, 3, 11, 4, 10, 5, 9, 6, 8, 7];
 const R_ANIMAL = 5.4, DECK_TOP = 0.5, ANIMAL_BASE_Y = 2.0;
 
 // ---------- tiny procedural-geometry kit ----------
@@ -43,25 +47,6 @@ function stripeTexture(colors, n = 24) {
   for (let i = 0; i < n; i++) { ctx.fillStyle = colors[i % colors.length]; ctx.fillRect(Math.floor((i * 1024) / n), 0, Math.ceil(1024 / n) + 1, 16); }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
 }
-function textTexture(text, { bg = '#1e6b3c', fg = '#f6d44a', border = '#d9a63a', w = 1024, h = 256, size = 150 } = {}) {
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = border; ctx.lineWidth = 18; ctx.strokeRect(14, 14, w - 28, h - 28);
-  ctx.fillStyle = fg; ctx.font = `bold ${size}px Georgia, "Times New Roman", serif`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
-  ctx.fillText(text, w / 2, h / 2 + 6);
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
-}
-/** Two-sided text board: a thin box whose front and back faces both carry the text (box UVs read correctly from either side). */
-function textBoard(text, w, h, opts) {
-  const tex = textTexture(text, opts);
-  const edge = new THREE.MeshStandardMaterial({ color: opts?.edge ?? GOLD, roughness: 0.5, metalness: 0.3 });
-  const mats = [edge, edge, edge, edge, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 }), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 })];
-  return new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.12), mats);
-}
-
 // ---------- animals (each returns a Group with ONE merged mesh; userData.saddleY = where the rider's bottom goes) ----------
 function leg(P, color, hoofColor, x, z, ang, len = 0.72) {
   P.push(piece(box(0.18, len, 0.2), color, [x, -0.28, z], [ang, 0, 0], null, [0, -len / 2, 0]));
@@ -176,8 +161,9 @@ export class Carousel extends Ride {
   constructor(game, opts) {
     super(game, { ...opts, name: 'Royal Carousel', kind: 'passive' });
     this.duration = 30;
-    this.cameraOffset.set(0, 2.5, -5.5);
-    this.cameraLookOffset.set(0, 1.4, 6);
+    // low and close enough to stay under the canopy (its underside is ~y 6.5 at the camera's radius)
+    this.cameraOffset.set(0, 1.7, -4.6);
+    this.cameraLookOffset.set(0, 1.3, 6);
     this.tagline = 'Hop on a unicorn and go round the royal way';
   }
 
@@ -287,17 +273,25 @@ export class Carousel extends Ride {
       g.children[0].castShadow = true;
       g.children[0].userData.noOcclude = true;   // small animals: the orbit camera passes them rather than snapping in
       rotor.add(g);
-      this.animals.push({ group: g, baseY: ANIMAL_BASE_Y + g.userData.lift, phase: (i % 2) * Math.PI + i * 0.35 });
+      this.animals.push({ group: g, baseY: ANIMAL_BASE_Y + g.userData.lift, phase: (i % 2) * Math.PI + i * 0.35, amp: BOB });
     });
     // chariots on the inner ring
     for (const k of [0, 1]) {
       const a = k * Math.PI + Math.PI / 12;
       const c = chariot(); c.position.set(Math.sin(a) * 3.3, DECK_TOP, Math.cos(a) * 3.3); c.rotation.y = a + Math.PI / 2; c.children[0].userData.noOcclude = true; rotor.add(c);
     }
-    // rider seat on the first unicorn (index 1); feet-origin sits 0.45 under the saddle top, hips slightly aft of the pole
-    const uni = this.animals[1].group;
+    // rider seat on the first unicorn (index 1); feet-origin sits 0.45 under the saddle top, hips slightly aft of the pole.
+    // The seat hangs from a level carrier that is driven round with the rotor in update() (so the camera never bobs
+    // or tilts). The carrier lives directly under the ride group, NOT the rotor: the player's camera treats the seat's
+    // ancestors as "the vehicle" and never lets them occlude, so parenting to the rotor would let the camera pass
+    // through the canopy and the centre column. The unicorn's own bob eases to zero while someone rides it.
+    this.riderAnimal = this.animals[1];
+    const uni = this.riderAnimal.group;
+    this.carrier = new THREE.Group(); G.add(this.carrier);
+    this.carrierAngle = (1 / 12) * TAU;
     this.seat.position.set(0, uni.userData.saddleY - 0.45, -0.5);
-    uni.add(this.seat);
+    this.carrier.add(this.seat);
+    this.placeCarrier(0);
 
     // ---- station (on the +X side, toward the park's central promenade) ----
     const st = new THREE.Group(); st.rotation.y = Math.PI / 2; G.add(st);
@@ -311,8 +305,8 @@ export class Carousel extends Ride {
       piece(box(0.3, 2.3, 0.3), GOLD, [-6.05, 1.15, 11.25]), piece(box(0.3, 2.3, 0.3), GOLD, [-4.35, 1.15, 11.25]),
     ]);
     booth.castShadow = true; st.add(booth);
-    const tickets = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.42), new THREE.MeshStandardMaterial({ map: textTexture('TICKETS', { bg: '#f6d44a', fg: '#1e6b3c', border: '#1e6b3c', w: 512, h: 128, size: 92 }), roughness: 0.6 }));
-    tickets.position.set(-5.2, 2.1, 11.37); st.add(tickets);
+    const tickets = makeTextBoard('TICKETS', 1.6, 0.42, { bg: '#f6d44a', fg: '#1e6b3c', border: '#1e6b3c', edge: GOLD, padX: 40 });
+    tickets.position.set(-5.2, 2.12, 11.44); st.add(tickets);   // plaque proud of the booth face (never coplanar)
     const arch = fuse([
       piece(cyl(0.14, 0.14, 3.4, 10), GOLD, [-2.5, 1.7, 9.6]), piece(cyl(0.14, 0.14, 3.4, 10), GOLD, [2.5, 1.7, 9.6]),
       piece(tor(2.5, 0.12, Math.PI, 8, 32), GOLD, [0, 3.4, 9.6]),
@@ -320,7 +314,7 @@ export class Carousel extends Ride {
       piece(sph(0.25, 10, 8), GOLD, [0, 5.95, 9.6]),
     ], { roughness: 0.3, metalness: 0.8 });
     arch.userData.noOcclude = true; st.add(arch);
-    const board = textBoard('Royal Carousel', 4.1, 1.0, { bg: '#1e6b3c', fg: '#f6d44a', border: '#d9a63a', size: 130 });
+    const board = makeTextBoard(this.name, 4.1, 1.0, { bg: '#1e6b3c', fg: '#f6d44a', border: '#d9a63a' });
     board.position.set(0, 4.55, 9.6); st.add(board);
 
     // ---- station position, colliders ----
@@ -339,9 +333,31 @@ export class Carousel extends Ride {
 
   onBoard(player) { if (player?.cam) player.cam.yaw = Math.PI; }   // start looking forward over the unicorn's head
 
+  /** Remote rider i sits on the next horse over (nearest to the unicorn first); each bobs with its own animal. */
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) {
+      const a = this.animals[PEER_ORDER[i % PEER_ORDER.length]];
+      const s = new THREE.Object3D();
+      s.position.set(0, a.group.userData.saddleY - 0.45, -0.5);
+      a.group.add(s);
+      this._peerSeats[i] = s;
+    }
+    return this._peerSeats[i];
+  }
+
+  placeCarrier(rotorAngle) {
+    const a = this.carrierAngle + rotorAngle;
+    this.carrier.position.set(Math.sin(a) * R_ANIMAL, ANIMAL_BASE_Y, Math.cos(a) * R_ANIMAL);
+    this.carrier.rotation.y = a + Math.PI / 2;
+  }
+
   update(dt, t) {
     this.rotor.rotation.y = t * SPIN;
-    for (const a of this.animals) a.group.position.y = a.baseY + Math.sin(t * 2.4 + a.phase) * 0.35;
+    this.placeCarrier(t * SPIN);
+    const ra = this.riderAnimal;
+    ra.amp += ((this.riding ? 0 : BOB) - ra.amp) * Math.min(1, dt * 3);
+    for (const a of this.animals) a.group.position.y = a.baseY + Math.sin(t * 2.4 + a.phase) * a.amp;
     this.bulbMats[0].emissiveIntensity = 1.4 + Math.sin(t * 5.0) * 0.9;
     this.bulbMats[1].emissiveIntensity = 1.4 + Math.sin(t * 5.0 + Math.PI) * 0.9;
     this.flag.rotation.y = Math.sin(t * 3.1) * 0.5;

@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
+import { makeTextBoard } from './shared/track.js';
 
 const TAU = Math.PI * 2;
 const GREEN = 0x1e6b3c, YELLOW = 0xf6d44a, PINK = 0xf48fb1, GOLD = 0xd9a63a, CREAM = 0xfff3dc, WHITE = 0xfafafa, STEEL = 0x2a5a3a;
@@ -35,23 +36,6 @@ const cone = (r, h, s = 16) => new THREE.ConeGeometry(r, h, s);
 const sph = (r, w = 12, h = 8) => new THREE.SphereGeometry(r, w, h);
 const tor = (r, t, arc = TAU, ts = 8, rs = 32) => new THREE.TorusGeometry(r, t, ts, rs, arc);
 
-function textTexture(text, { bg = '#1e6b3c', fg = '#f6d44a', border = '#d9a63a', w = 1024, h = 256, size = 150 } = {}) {
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = border; ctx.lineWidth = 18; ctx.strokeRect(14, 14, w - 28, h - 28);
-  ctx.fillStyle = fg; ctx.font = `bold ${size}px Georgia, "Times New Roman", serif`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
-  ctx.fillText(text, w / 2, h / 2 + 6);
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
-}
-function textBoard(text, w, h, opts) {
-  const tex = textTexture(text, opts);
-  const edge = new THREE.MeshStandardMaterial({ color: GOLD, roughness: 0.5, metalness: 0.3 });
-  const mats = [edge, edge, edge, edge, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 }), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 })];
-  return new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.12), mats);
-}
 function sunFaceTexture() {
   const c = document.createElement('canvas'); c.width = c.height = 256;
   const ctx = c.getContext('2d');
@@ -75,8 +59,10 @@ function gondola(color, trim) {
   P.push(piece(cyl(1.15, 0.95, 1.0, 16, true), color, [0, -3.05, 0]));             // tub wall (open)
   P.push(piece(cyl(0.96, 0.96, 0.08, 16), 0x8a6a4a, [0, -3.51, 0]));                // floor
   P.push(piece(tor(1.15, 0.06, TAU, 6, 24), trim, [0, -2.55, 0], [Math.PI / 2, 0, 0]));
-  P.push(piece(box(1.5, 0.5, 0.6), CREAM, [0, -3.27, 0.45]));                       // bench (top = floor + 0.45)
-  P.push(piece(box(1.5, 0.5, 0.1), CREAM, [0, -2.8, 0.78]));                        // backrest
+  for (const s of [-1, 1]) {                                                         // two facing benches (top = floor + 0.45)
+    P.push(piece(box(1.5, 0.5, 0.6), CREAM, [0, -3.27, s * 0.7]));
+    P.push(piece(box(1.5, 0.5, 0.08), CREAM, [0, -2.8, s * 1.0]));                   // backrest
+  }
   const g = new THREE.Group();
   const m = fuse(P, { side: THREE.DoubleSide }); m.castShadow = true; g.add(m);
   return g;
@@ -163,9 +149,11 @@ export class FerrisWheel extends Ride {
       wheel.add(pivot);
       this.gondolas.push({ pivot, a });
     }
-    // default seat in gondola 0 (re-parented on boarding); rider faces local −Z (over the park)
-    this.seat.position.set(0, GONDOLA_FLOOR, 0); this.seat.rotation.y = Math.PI;
+    // default seat in gondola 0 (re-parented on boarding); rider faces local −Z (over the park) from the +Z bench
+    this.seat.position.set(0, GONDOLA_FLOOR, 0.25); this.seat.rotation.y = Math.PI;
     this.gondolas[0].pivot.add(this.seat);
+    this.seatGondola = 0;
+    this._farPeers = [];   // peer seats in the gondolas after the rider's: [{ seat, k }]
 
     // ---- sun at the hub (static, smiling toward the park and away) ----
     const sun = new THREE.Group(); sun.position.y = HUB_Y; G.add(sun);
@@ -192,7 +180,7 @@ export class FerrisWheel extends Ride {
       piece(sph(0.22, 8, 6), GOLD, [-4.2, 3.95, -6.0]),
     ], { roughness: 0.3, metalness: 0.8 });
     sign.userData.noOcclude = true; G.add(sign);
-    const board = textBoard('Sunshine Wheel', 3.4, 0.85, { bg: '#f6d44a', fg: '#1e6b3c', border: '#1e6b3c', size: 130 });
+    const board = makeTextBoard(this.name, 3.4, 0.85, { bg: '#f6d44a', fg: '#1e6b3c', border: '#1e6b3c' });
     board.position.set(-4.2, 3.0, -6.0); board.rotation.y = Math.PI; G.add(board);
     const hut = fuse([
       piece(box(1.7, 2.2, 1.7), CREAM, [4.6, 1.1, -5.6]),
@@ -211,6 +199,35 @@ export class FerrisWheel extends Ride {
     this.addBoxCollider(new THREE.Vector3(0, 0.5, -2.9), new THREE.Vector3(6.6, 1, 3.2));                                // platform deck
     this.addBoxCollider(new THREE.Vector3(4.6, 1.2, -5.6), new THREE.Vector3(2, 2.4, 2));                                 // hut
     this.addBoxCollider(new THREE.Vector3(-4.2, 1.6, -6.0), new THREE.Vector3(2.6, 3.2, 0.5));                            // sign
+    // queue fence either side of the platform, entrance gap in the middle of the park-side rail
+    for (const s of [-1, 1]) {
+      this.addBoxCollider(new THREE.Vector3(s * 3.2, 0.7, -2.9), new THREE.Vector3(0.25, 1.4, 3.2));
+      this.addBoxCollider(new THREE.Vector3(s * 2.4, 0.7, -4.4), new THREE.Vector3(1.8, 1.4, 0.25));
+    }
+  }
+
+  /**
+   * Remote riders share the local gondola: 0 = across (facing the rider), 1 = beside, 2 = across-beside;
+   * 3+ sit in the gondolas after it (re-homed whenever the local seat moves to another gondola).
+   */
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) {
+      const s = new THREE.Object3D();
+      if (i < 3) {
+        // seat-local: +Z is the rider's forward (gondola −Z); the other bench is behind the rider
+        const spots = [[0, 0.5, Math.PI], [-0.7, 0, 0], [0.7, 0.5, Math.PI]];
+        s.position.set(spots[i][0], 0, spots[i][1]); s.rotation.y = spots[i][2];
+        this.seat.add(s);
+      } else {
+        const k = i - 2;
+        s.position.set(0, GONDOLA_FLOOR, 0.25); s.rotation.y = Math.PI;
+        this.gondolas[(this.seatGondola + k) % N].pivot.add(s);
+        this._farPeers.push({ seat: s, k });
+      }
+      this._peerSeats[i] = s;
+    }
+    return this._peerSeats[i];
   }
 
   onBoard(player) {
@@ -223,6 +240,8 @@ export class FerrisWheel extends Ride {
       if (Math.abs(d) < bestD) { bestD = Math.abs(d); best = g; bestDelta = d; }
     }
     best.pivot.add(this.seat);
+    this.seatGondola = this.gondolas.indexOf(best);
+    for (const fp of this._farPeers) this.gondolas[(this.seatGondola + fp.k) % N].pivot.add(fp.seat);
     this._occluders = undefined;   // the seat moved to another gondola: the player's occluder cache must rebuild so this gondola's roof is treated as the vehicle
     this.duration = (bestDelta + TAU) / OMEGA;
   }

@@ -1,4 +1,5 @@
-// NPCs: the two princess hosts at the Princess Plaza gazebo plus a few ambient park staff.
+// NPCs: the two princess hosts at the Princess Plaza gazebo, a few ambient park staff, and the Splash Cove
+// lifeguards (who whistle at anyone running on the pool deck — see LifeguardPatrol).
 // Each NPC: { id, name, group, update(dt, t), talk() }. Dialogue content lives in dialogue.js.
 // The princesses ('p1', 'p2') take their name, color and catchphrase from game.settings.princesses — never
 // hardcoded — and rebuild themselves on the 'settings:change' event.
@@ -71,12 +72,40 @@ const AMBIENT_DEFS = [
       topColor: '#ffffff', bottomColor: '#ff8c42', shoeColor: '#8d6e63', accessory: 'wizardHat', accessoryColor: '#ffffff' },
   },
   {
-    id: 'lifeguard', name: 'Lifeguard', sub: 'Lagoon patrol', color: '#e74c3c', ambient: true,
+    id: 'lifeguard', name: 'Lifeguard', sub: 'Lagoon patrol', color: '#e74c3c', ambient: true, lifeguard: true,
     position: [12, 0, -45], facing: Math.PI / 2,
     avatar: { name: 'Lifeguard', skin: SKIN_TONES[4], hairStyle: 'curly', hairColor: '#2b1a0e', outfit: 'casual',
       topColor: '#e74c3c', bottomColor: '#ffffff', shoeColor: '#f9d71c', accessory: 'cape', accessoryColor: '#e74c3c' },
   },
 ];
+
+// Splash Cove lifeguards: positions come from world.lifeguardSpots when the world provides them.
+const LIFEGUARD_FALLBACK = [
+  { position: [148, 0, -39], facing: -Math.PI / 2 },   // wave pool, facing west over the water
+  { position: [160, 0, 10], facing: Math.PI },         // lazy river
+];
+const LIFEGUARD_LOOKS = [
+  { name: 'Lifeguard Sunny', skin: SKIN_TONES[2], hairStyle: 'bob', hairColor: '#f2d16b' },
+  { name: 'Lifeguard Reef', skin: SKIN_TONES[5], hairStyle: 'short', hairColor: '#111111' },
+  { name: 'Lifeguard Coral', skin: SKIN_TONES[0], hairStyle: 'bun', hairColor: '#c0392b' },
+];
+function lifeguardDefs(game) {
+  const spots = Array.isArray(game.world?.lifeguardSpots) && game.world.lifeguardSpots.length ? game.world.lifeguardSpots : LIFEGUARD_FALLBACK;
+  return spots.slice(0, 3).map((s, i) => {
+    const p = s.position || s;
+    const pos = Array.isArray(p) ? p : [p.x, p.y ?? 0, p.z];
+    const look = LIFEGUARD_LOOKS[i % LIFEGUARD_LOOKS.length];
+    return {
+      id: `lifeguard-${i + 1}`, name: look.name, sub: 'Pool patrol · no running!', color: '#e74c3c', ambient: true, lifeguard: true, poolguard: true,
+      position: pos, facing: s.facing ?? 0, chair: !!s.chair,
+      avatar: { ...look, outfit: 'swimsuit', topColor: '#e74c3c', bottomColor: '#e74c3c', shoeColor: '#ffffff', accessory: 'sunglasses', accessoryColor: '#111111' },
+    };
+  });
+}
+// Fallback "no running" zone: the whole Splash Cove wing.
+const POOL_FALLBACK = new THREE.Box3(new THREE.Vector3(122, -5, -70), new THREE.Vector3(200, 30, 85));
+const RUN_SPEED = 8.5;      // m/s — walking is 6.5, running 11 (core/player.js)
+const WARN_COOLDOWN = 6;
 
 // Floating name tag: canvas texture with name + optional crown icon, drawn in the NPC's color.
 // Returns the sprite plus a redraw(name, color) so a renamed/recoloured NPC can refresh in place.
@@ -129,6 +158,50 @@ function makeNameTag(name, color, crown) {
   return sprite;
 }
 
+// Comic speech bubble ("NO RUNNING!") — white bubble, red text, shown briefly above a shouting lifeguard.
+function makeShoutBubble(text) {
+  const w = 512, h = 192;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.roundRect(16, 10, w - 32, h - 60, 40); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(w / 2 - 28, h - 52); ctx.lineTo(w / 2 + 28, h - 52); ctx.lineTo(w / 2, h - 8); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 8;
+  ctx.beginPath(); ctx.roundRect(16, 10, w - 32, h - 60, 40); ctx.stroke();
+  ctx.font = 'bold 66px "Trebuchet MS", "Segoe UI", Arial, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#e74c3c';
+  ctx.fillText(text, w / 2, (h - 50) / 2 + 4);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false }));
+  sprite.scale.set(3.4, 3.4 * (h / w), 1);
+  sprite.renderOrder = 10;
+  sprite.visible = false;
+  return sprite;
+}
+
+const gearMat = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.7, ...extra });
+/** Lifeguard kit: a whistle on a lanyard and a red rescue float tucked under the arm. Local to the avatar group. */
+function buildLifeguardGear() {
+  const g = new THREE.Group(); g.name = 'lifeguard-gear';
+  // lanyard + whistle
+  const lanyard = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.015, 6, 20), gearMat('#222222'));
+  lanyard.position.set(0, 1.5, 0.12); lanyard.rotation.x = 0.35; g.add(lanyard);
+  const whistle = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.09, 0.09), gearMat('#f9d71c', { metalness: 0.4, roughness: 0.3 }));
+  whistle.position.set(0, 1.3, 0.3); g.add(whistle);
+  // rescue float (red tube with white stripes) under the left arm
+  const float = new THREE.Group();
+  float.position.set(-0.62, 1.0, 0.05); float.rotation.z = 0.12;
+  const tube = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.8, 4, 10), gearMat('#e74c3c'));
+  float.add(tube);
+  for (const y of [-0.25, 0.25]) { const s = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, 0.08, 12), gearMat('#ffffff')); s.position.y = y; float.add(s); }
+  tube.castShadow = true;
+  g.add(float);
+  g.userData.float = float;
+  return g;
+}
+
 class NPC {
   constructor(game, def) {
     this.game = game;
@@ -137,8 +210,9 @@ class NPC {
     this.avatar = buildAvatar(def.avatar);
     this.group = this.avatar.group;
     this.group.name = `npc:${def.id}`;
-    const [x, , z] = def.position;
-    const y = game.world?.getGroundHeight?.(x, z, 1) ?? 0;
+    const [x, py, z] = def.position;
+    // perches (lifeguard chair decks) pass their own height; everyone else stands on the ground
+    const y = Math.max(game.world?.getGroundHeight?.(x, z, 1) ?? 0, py || 0);
     this.group.position.set(x, y, z);
     this.baseFacing = def.facing ?? 0;
     this.group.rotation.y = this.baseFacing;
@@ -150,6 +224,8 @@ class NPC {
     this.waveUntil = 0;       // t until which the wave animation plays
     this.nextWaveAt = 0;      // t when the next wave may start
     this.anim = 'idle';
+    this.lookAt = null;       // Vector3 to face instead of the base facing (set by shout())
+    this.lookUntil = 0;
 
     this.interactable = {
       position: this.group.position, radius: 3.5, kind: 'npc', id: this.id,
@@ -164,6 +240,7 @@ class NPC {
   applyDef(def) {
     this.def = def; this.name = def.name;
     this.avatar.setConfig(def.avatar);
+    if (!this.tag.parent) this.group.add(this.tag);   // the avatar rebuild clears the group's children
     this.group.name = `npc:${def.id}`;
     this.tag.userData.redraw?.(def.name, tagColor(def.color));
     this.tagBaseY = this.avatar.height + 0.9;
@@ -204,12 +281,12 @@ class NPC {
     if (player) {
       const dx = player.position.x - this.group.position.x, dz = player.position.z - this.group.position.z;
       dist = Math.hypot(dx, dz);
-      if (dist < 10) targetYaw = Math.atan2(dx, dz);
+      if (dist < 10 || t < this.lookUntil) targetYaw = Math.atan2(dx, dz);
     }
     // lerp yaw along the shortest arc
     let diff = targetYaw - this.group.rotation.y;
     diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-    this.group.rotation.y += diff * Math.min(1, dt * 4);
+    this.group.rotation.y += diff * Math.min(1, dt * (t < this.lookUntil ? 10 : 4));
 
     // occasional wave when the player is near
     if (dist < 8 && t > this.nextWaveAt && t > this.waveUntil) {
@@ -222,9 +299,90 @@ class NPC {
   }
 }
 
+/** A lifeguard: whistle + float, and shout() — turns to the player, raises an arm, shows a "NO RUNNING!" bubble. */
+class Lifeguard extends NPC {
+  constructor(game, def) {
+    super(game, def);
+    this.gear = buildLifeguardGear();
+    this.group.add(this.gear);
+    this.bubble = makeShoutBubble('NO RUNNING!');
+    this.bubble.position.y = this.tagBaseY + 1.1;
+    this.group.add(this.bubble);
+    this.shoutUntil = 0;
+    if (def.chair) {
+      // up on a chair: the talk prompt is anchored at the foot of the ladder so players on the deck can reach it
+      const g = this.group.position;
+      this.interactable.position = new THREE.Vector3(g.x, game.world?.getGroundHeight?.(g.x, g.z, 1) ?? 0, g.z);
+      this.interactable.radius = 4.5;
+    }
+  }
+  shout(t) {
+    this.shoutUntil = t + 2.4;
+    this.waveUntil = t + 2.4;          // arm up (the 'wave' pose)
+    this.nextWaveAt = t + 8;
+    this.lookUntil = t + 3;
+    this.bubble.visible = true;
+  }
+  update(dt, t) {
+    super.update(dt, t);
+    if (this.bubble.visible) {
+      const k = Math.min(1, (this.shoutUntil - t) / 0.3);
+      this.bubble.visible = t < this.shoutUntil;
+      this.bubble.material.opacity = Math.max(0, Math.min(1, k));
+      this.bubble.position.y = this.tagBaseY + 1.1 + Math.sin(t * 14) * 0.05;   // angry jiggle
+    }
+    const fl = this.gear.userData.float;
+    if (fl) fl.rotation.z = 0.12 + (t < this.shoutUntil ? Math.sin(t * 18) * 0.12 : 0);
+  }
+}
+
+/**
+ * Watches the local player: running (speed > RUN_SPEED, from the position delta so a sugar rush counts too)
+ * inside any world.poolZones box makes the nearest lifeguard shout, whistle and emit 'lifeguard:warn'.
+ */
+class LifeguardPatrol {
+  constructor(game, guards) {
+    this.game = game; this.guards = guards;
+    this.id = 'lifeguard-patrol';
+    this.group = new THREE.Group(); this.group.name = 'npc:lifeguard-patrol';
+    this.prev = null; this.nextWarnAt = 0; this.runTime = 0;
+  }
+  inPool(p) {
+    const zones = this.game.world?.poolZones;
+    const list = Array.isArray(zones) && zones.length ? zones : [POOL_FALLBACK];
+    for (const b of list) {
+      const min = b.min || b, max = b.max || b;
+      if (p.x >= min.x && p.x <= max.x && p.z >= min.z && p.z <= max.z) return true;
+    }
+    return false;
+  }
+  update(dt, t) {
+    const g = this.game, p = g.player;
+    if (!p || !g.started || dt <= 0) return;
+    const pos = p.position;
+    if (!this.prev) { this.prev = pos.clone(); return; }
+    const speed = Math.hypot(pos.x - this.prev.x, pos.z - this.prev.z) / dt;
+    this.prev.copy(pos);
+    const running = p.state === 'walk' && speed > RUN_SPEED && speed < 40 && this.inPool(pos);
+    // a short grace period so one fast step onto the deck doesn't trigger it
+    this.runTime = running ? this.runTime + dt : 0;
+    if (!running || this.runTime < 0.25 || t < this.nextWarnAt || !this.guards.length) return;
+    this.nextWarnAt = t + WARN_COOLDOWN;
+    let best = null, bestD = Infinity;
+    for (const lg of this.guards) { const d = lg.group.position.distanceTo(pos); if (d < bestD) { bestD = d; best = lg; } }
+    best.shout(t);
+    g.audio?.play?.('whistle');
+    g.ui.toast?.(`${best.name}: HEY! NO RUNNING by the pool! 🛟`, 3200);
+    g.events.emit('lifeguard:warn', { npc: best.id });
+  }
+}
+
 export function createNPCs(game) {
   const princesses = ['p1', 'p2'].map((id) => new NPC(game, princessDef(id, game.settings)));
-  const npcs = [...princesses, ...AMBIENT_DEFS.map((def) => new NPC(game, def))];
+  const ambient = AMBIENT_DEFS.map((def) => (def.lifeguard ? new Lifeguard(game, def) : new NPC(game, def)));
+  const poolGuards = lifeguardDefs(game).map((def) => new Lifeguard(game, def));
+  const patrol = new LifeguardPatrol(game, [...poolGuards, ...ambient.filter((n) => n instanceof Lifeguard)]);
+  const npcs = [...princesses, ...ambient, ...poolGuards, patrol];
   // Player renamed / recoloured a princess (or the park): rebuild avatars, name tags and prompt labels in place.
   game.events.on('settings:change', (settings) => {
     for (const npc of princesses) npc.applyDef(princessDef(npc.id, settings || game.settings));

@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
+import { makeTextBoard, addInstanceColliders } from './shared/track.js';
 
 const TAU = Math.PI * 2;
 const GREEN = 0x1e6b3c, YELLOW = 0xf6d44a, GOLD = 0xd9a63a, CREAM = 0xfff3dc, PINK = 0xf48fb1, WHITE = 0xfafafa;
@@ -72,30 +73,6 @@ const platterTexture = () => canvasTex(512, 512, (ctx, w, h) => {
   }
   ctx.strokeStyle = '#f48fb1'; ctx.lineWidth = 14; ctx.beginPath(); ctx.arc(w / 2, h / 2, 90, 0, TAU); ctx.stroke();
 });
-function textTexture(text, { bg = '#f48fb1', fg = '#ffffff', border = '#d9a63a', w = 1024, h = 256, size = 150 } = {}) {
-  return canvasTex(w, h, (ctx) => {
-    ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = border; ctx.lineWidth = 18; ctx.strokeRect(14, 14, w - 28, h - 28);
-    ctx.fillStyle = fg; ctx.font = `bold ${size}px Georgia, "Times New Roman", serif`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
-    ctx.fillText(text, w / 2, h / 2 + 6);
-    // little teacup doodle in the corners
-    ctx.shadowColor = 'transparent'; ctx.fillStyle = fg;
-    for (const x of [90, w - 90]) {
-      ctx.beginPath(); ctx.moveTo(x - 34, h / 2 - 20); ctx.lineTo(x + 34, h / 2 - 20); ctx.lineTo(x + 22, h / 2 + 30); ctx.lineTo(x - 22, h / 2 + 30); ctx.closePath(); ctx.fill();
-      ctx.lineWidth = 9; ctx.strokeStyle = fg; ctx.beginPath(); ctx.arc(x + 42, h / 2 + 2, 16, -Math.PI / 2, Math.PI / 2); ctx.stroke();
-      ctx.fillRect(x - 40, h / 2 + 30, 80, 9);
-    }
-  });
-}
-function textBoard(text, w, h, opts) {
-  const tex = textTexture(text, opts);
-  const edge = new THREE.MeshStandardMaterial({ color: GOLD, roughness: 0.5, metalness: 0.3 });
-  const mats = [edge, edge, edge, edge, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 }), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 })];
-  return new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.12), mats);
-}
-
 /** A big teacup on its saucer. Origin = saucer bottom; the rider's feet go at CUP_FLOOR. */
 function teacup(body, accent) {
   const P = [];
@@ -203,7 +180,8 @@ export class Teacups extends Ride {
     // ---- awning: poles, striped cone, scalloped valance, finial ----
     const poles = new THREE.InstancedMesh(cyl(0.12, 0.12, 6.8, 10), new THREE.MeshStandardMaterial({ color: WHITE, roughness: 0.6 }), 8);
     for (let i = 0; i < 8; i++) { const a = (i / 8) * TAU + Math.PI / 8; poles.setMatrixAt(i, _m.makeTranslation(Math.sin(a) * 11.0, 3.4, Math.cos(a) * 11.0)); }
-    G.add(poles);
+    poles.userData.noOcclude = true; G.add(poles);
+    addInstanceColliders(this, poles, { minW: 0.5, height: 3 });
     const awningTex = stripeTexture(['#f48fb1', '#fff3dc'], 32);
     const awning = new THREE.Mesh(cone(11.8, 3.2, 16), new THREE.MeshStandardMaterial({ map: awningTex, emissiveMap: awningTex, emissive: 0xffffff, emissiveIntensity: 0.22, roughness: 0.85, side: THREE.DoubleSide }));
     awning.position.y = 8.4; G.add(awning);
@@ -225,7 +203,16 @@ export class Teacups extends Ride {
       piece(box(0.8, 0.5, 0.5), CREAM, [-4.0, 0.25, -11.6]),
     ], { roughness: 0.3, metalness: 0.8 });
     G.add(signPosts);
-    const board = textBoard('Tipsy Teacups', 3.6, 0.9, { size: 130 });
+    // little teacup doodles in the corners; the text is measured to fit between them
+    const doodle = (ctx, w, h) => {
+      ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 9;
+      for (const x of [90, w - 90]) {
+        ctx.beginPath(); ctx.moveTo(x - 34, h / 2 - 20); ctx.lineTo(x + 34, h / 2 - 20); ctx.lineTo(x + 22, h / 2 + 30); ctx.lineTo(x - 22, h / 2 + 30); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.arc(x + 42, h / 2 + 2, 16, -Math.PI / 2, Math.PI / 2); ctx.stroke();
+        ctx.fillRect(x - 40, h / 2 + 30, 80, 9);
+      }
+    };
+    const board = makeTextBoard(this.name, 3.6, 0.9, { bg: '#f48fb1', fg: '#ffffff', border: '#d9a63a', padX: 175, decorate: doodle });
     board.position.set(-4.0, 2.75, -11.6); board.rotation.y = Math.PI; G.add(board);
 
     // ---- station + colliders ----
@@ -236,6 +223,24 @@ export class Teacups extends Ride {
     this.addBoxCollider(new THREE.Vector3(0, 0.8, 0), new THREE.Vector3(8.4, 1.6, 20));
     this.addBoxCollider(new THREE.Vector3(0, 0.8, 0), new THREE.Vector3(15.4, 1.6, 15.4));
     this.addBoxCollider(new THREE.Vector3(-4.0, 1.5, -11.6), new THREE.Vector3(2.8, 3, 0.5));
+  }
+
+  /** Remote riders 0–2 sit round the rim of the rider's cup facing the middle; 3+ take the other cups (which spin). */
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) {
+      const s = new THREE.Object3D();
+      if (i < 3) {
+        const a = [TAU / 3, -TAU / 3, 0][i];
+        s.position.set(Math.sin(a) * 0.72, 0.3 + CUP_FLOOR, Math.cos(a) * 0.72); s.rotation.y = a + Math.PI;
+        this.seatPivot.add(s);
+      } else {
+        s.position.set(0, 0.3 + CUP_FLOOR, 0);
+        this.cups[1 + (i - 3) % (this.cups.length - 1)].group.add(s);
+      }
+      this._peerSeats[i] = s;
+    }
+    return this._peerSeats[i];
   }
 
   // ---------- boarding + speed modes ----------

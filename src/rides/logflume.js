@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { Track, buildPillars, makeSign, makeStripeTexture, addTrackColliders } from './shared/track.js';
+import { Track, buildPillars, makeSign, makeStripeTexture, addTrackColliders, addInstanceColliders } from './shared/track.js';
 
 const G = 9.81, FLOAT = 4.2, CRAWL = 2.6, LIFT = 2.4, LOGS = 3, SPLASH_N = 20;
 const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _m = new THREE.Matrix4(), _one = new THREE.Vector3(1, 1, 1);
@@ -114,6 +114,7 @@ export class LogFlume extends Ride {
     for (const lateral of [1.1, -1.1]) {
       const posts = buildPillars(tr, { every: 3, minH: 1.4, drop: 0.7, width: 0.3, lateral, clear: 2.2, mat: M.darkWood });
       posts.userData.noOcclude = true; this.group.add(posts);
+      addInstanceColliders(this, posts, { minW: 0.5 });
     }
   }
 
@@ -163,7 +164,7 @@ export class LogFlume extends Ride {
     const sign = makeSign(['GATOR GULCH', 'LOG FLUME'], { w: 9, h: 2.2, bg: '#2f4a1e', fg: '#f1e4a6', border: '#f1e4a6', boardColor: 0x4a3119 });
     sign.position.set(2, 5.9, 28.75); g.add(sign);
     const sign2 = makeSign(['GATOR GULCH'], { w: 7, h: 1.3, bg: '#2f4a1e', fg: '#f1e4a6', border: '#f1e4a6', boardColor: 0x4a3119 });
-    sign2.position.set(2, 3.2, 19.15); g.add(sign2);
+    sign2.position.set(6.5, 3.2, 19.15); g.add(sign2);   // between the roof posts at x 1.5 and 11.5
     // queue fence (gap at x 3..7 is the entrance)
     const posts2 = [], rails = [];
     const run = (x0, x1, z) => { for (let x = x0; x <= x1 + 0.01; x += 2) posts2.push([x, z]); rails.push([(x0 + x1) / 2, z, x1 - x0]); };
@@ -181,6 +182,7 @@ export class LogFlume extends Ride {
     this.addBoxCollider(new THREE.Vector3(-2, 0.6, 26.9), new THREE.Vector3(10, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(9, 0.6, 26.9), new THREE.Vector3(4, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(-2, 0.6, 28.7), new THREE.Vector3(10, 1.2, 0.3));
+    for (const x of [-7.5, 1.5, 11.5]) for (const z of [19.6, 26.9]) this.addBoxCollider(new THREE.Vector3(x, 2.5, z), new THREE.Vector3(0.5, 5, 0.5));   // roof posts
   }
 
   buildSwamp(M) {
@@ -269,6 +271,21 @@ export class LogFlume extends Ride {
   }
 
   placeLogs() { for (const l of this.logs) this.track.trackAt(l.s, l.group.position, l.group.quaternion); }
+
+  /** Remote riders take the other rows of the rider's log (front, then back), then the rows of the next logs. */
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) {
+      const s = new THREE.Object3D();
+      let log, z;
+      if (i < 2) { log = this.logs[0]; z = [0.8, -1.3][i]; }
+      else { const j = i - 2; log = this.logs[1 + Math.floor(j / 3) % (LOGS - 1)]; z = [-0.3, 0.8, -1.3][j % 3]; }
+      s.position.set(0, 0.25, z);
+      log.group.add(s);
+      this._peerSeats[i] = s;
+    }
+    return this._peerSeats[i];
+  }
 
   onBoard() {
     // fresh lap: snap the rider's log to the station, keep the other two evenly spaced ahead

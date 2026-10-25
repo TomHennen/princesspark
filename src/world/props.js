@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MeshBuilder, C, makeTextSign, paint } from './builder.js';
-import { PATHS, PLAZA_R, LAGOON, CASTLE, MOAT, BRIDGE, GAZEBO, FOUNTAIN, SOUTH_WALL, WING, southWallZ, terrainY, isClear, onPath, inPlot, inWater, inWing } from './layout.js';
+import { PATHS, PLAZA_R, LAGOON, CASTLE, MOAT, BRIDGE, GAZEBO, FOUNTAIN, SOUTH_WALL, WING, southWallZ, terrainY, isClear, onPath, inPlot, inWater, inWing, inReserved } from './layout.js';
 import { buildWaterPark } from './waterpark.js';
 
 export function buildProps(world) {
@@ -59,6 +59,7 @@ function perimeter({ world, B }) {
       if (i === pts.length - 1) for (let px = Math.abs(x1) + 15; px < 128; px += 17) pillar(s * px, z1);
     }
     B.box(C.pink, 3, 2.6, 4, s * 6.5, 0, W.nearZ - 1.5);  // gate pier
+    world.addCollider(s * 6.5, 1.3, W.nearZ - 1.5, 3, 2.6, 4);
   }
 }
 
@@ -101,8 +102,7 @@ function gazebo(ctx) {
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 + Math.PI / 8, x = G.x + Math.cos(a) * 5.6, z = G.z + Math.sin(a) * 5.6;
     B.cyl(C.yellow, 0.42, 0.46, 0.3, x, 0, z, 10); B.cyl(C.white, 0.28, 0.3, 4.0, x, 0.3, z, 10); B.cyl(C.yellow, 0.42, 0.34, 0.3, x, 4.0, z, 10);
-    // only the north/south column pairs collide: the NPCs stand at (±3, 12) and need ~5 units clear around them
-    if (Math.abs(Math.cos(a)) < 0.5) world.addCollider(x, 2.2, z, 0.7, 4.4, 0.7);
+    world.addCollider(x, 2.2, z, 0.8, 4.4, 0.8);   // every column is solid (the NPCs at (±3, 12) have > 2.5 m clear)
   }
   world.addBlocker(G.x, 6.3, G.z, 15.2, 4.3, 15.2);   // solid roof: pull the camera in rather than clip through it
   B.cyl(C.yellow, 7.4, 7.4, 0.35, G.x, 4.15, G.z, 8);          // fascia
@@ -124,7 +124,7 @@ function fountain(ctx) {
   B.cyl(C.yellow, 0.8, 0.7, 0.6, F.x, 4.0, F.z, 10);
   for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; B.cone(C.yellow, 0.2, 0.5, F.x + Math.cos(a) * 0.65, 4.6, F.z + Math.sin(a) * 0.65, 6); }
   B.sphere(C.hotpink, 0.28, F.x, 4.8, F.z);
-  world.addCollider(F.x, 0.5, F.z, 8, 1, 8);
+  world.addCollider(F.x, 0.5, F.z, 2 * F.r + 0.2, 1.1, 2 * F.r + 0.2);
   // droplets
   const N = 48, drops = new THREE.InstancedMesh(new THREE.SphereGeometry(0.14, 6, 4), new THREE.MeshStandardMaterial({ color: 0xcdf3ff, roughness: 0.3 }), N);
   drops.frustumCulled = false; world.group.add(drops);
@@ -160,6 +160,7 @@ function lookout(ctx) {
   for (const [dx, dz] of [[-1.9, -1.9], [1.9, -1.9], [-1.9, 1.9], [1.9, 1.9]]) {
     B.cyl(C.wood, 0.17, 0.2, H - 0.3, X + dx, 0, Z + dz, 7);
     B.cyl(C.white, 0.09, 0.09, 2.3, X + dx, H, Z + dz, 6);
+    world.addCollider(X + dx, (H - 0.3) / 2, Z + dz, 0.45, H - 0.3, 0.45);
   }
   B.box(C.wood2, 4.6, 0.3, 4.6, X, H - 0.3, Z);
   B.box(C.yellow, 4.6, 0.12, 0.12, X, H + 0.95, Z - 2.25); B.box(C.yellow, 0.12, 0.12, 4.6, X - 2.25, H + 0.95, Z); B.box(C.yellow, 0.12, 0.12, 4.6, X + 2.25, H + 0.95, Z);
@@ -180,7 +181,47 @@ function lookout(ctx) {
     B.beam(C.yellow, x, H + 0.9, Z + 2.3, x, 1.4, Z + 7.1, 0.06); for (const z of [Z + 2.6, Z + 4.7, Z + 6.8]) B.cyl(C.white, 0.05, 0.05, 0.9, x, H - 0.5 * Math.min(4, Math.max(1, Math.round((z - Z - 2.3) / 1.2 + 0.5))), z, 5);
     world.addCollider(x, 1.6, Z + 4.7, 0.3, 2.6, 4.8);
   }
-  sign(ctx, 'FLAMINGO LOOKOUT', X, H + 1.75, Z + 2.33, 0, { w: 3.4, h: 0.6, bg: '#ffffff', fg: '#ff6fb5', stroke: '#1b5e20' });
+  sign(ctx, 'FLAMINGO LOOKOUT', X, H + 1.75, Z + 2.4, 0, { w: 3.4, h: 0.6, bg: '#ffffff', fg: '#ff6fb5', stroke: '#1b5e20' });
+  flamingoSlide(ctx, X, Z, H);
+}
+
+// A giant flamingo "drinking" beside the deck: you sit on its back and slide down its long neck to the puddle.
+function flamingoSlide(ctx, X, Z, H) {
+  const { world, B } = ctx, game = world.game;
+  const pts = [[X + 2.2, H + 0.05, Z], [X + 4.3, H + 0.4, Z], [X + 6.6, H - 0.15, Z - 0.5], [X + 8.6, 1.5, Z + 0.2], [X + 10.6, 0.65, Z + 1.7], [X + 12.4, 0.12, Z + 3.5]];
+  const curve = new THREE.CatmullRomCurve3(pts.map(([x, y, z]) => new THREE.Vector3(x, y, z)), false, 'catmullrom', 0.3);
+  // body straddling the deck rail, two long legs, tail feathers
+  B.sphere(C.flamingo, 1.3, X + 3.6, H - 0.35, Z, 12, 8, 1.3, 0.8, 1.0);
+  B.sphere(C.flamingo2, 0.8, X + 2.6, H - 0.1, Z, 8, 6, 1.1, 0.6, 1.1);
+  for (const s of [-1, 1]) { B.cyl(C.flamingo2, 0.07, 0.07, H - 0.9, X + 3.9, 0, Z + s * 0.45, 6); B.box(C.flamingo2, 0.5, 0.08, 0.6, X + 4.05, 0, Z + s * 0.45); }
+  // neck = the chute: a pink tube under a wide pink trough with raised lips
+  const P = curve.getPoints(26);
+  for (let i = 0; i < P.length - 1; i++) {
+    const a = P[i], b = P[i + 1], dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, len = Math.hypot(dx, dy, dz);
+    const yaw = Math.atan2(dx, dz), pitch = -Math.asin(dy / len), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, mz = (a.z + b.z) / 2;
+    B.beam(C.flamingo, a.x, a.y - 0.42, a.z, b.x, b.y - 0.42, b.z, 0.36, 8);
+    B.add(new THREE.BoxGeometry(1.2, 0.12, len + 0.12), C.flamingo2, mx, my - 0.1, mz, pitch, yaw, 0);
+    for (const s of [-1, 1]) B.add(new THREE.BoxGeometry(0.14, 0.34, len + 0.12), C.flamingo, mx + s * 0.55 * Math.cos(yaw), my + 0.06, mz - s * 0.55 * Math.sin(yaw), pitch, yaw, 0);
+  }
+  // head at the bottom, beak dipping into a little puddle
+  const e = pts[pts.length - 1];
+  B.sphere(C.flamingo, 0.5, e[0] + 0.9, 0.55, e[2] + 0.9, 10, 8);
+  B.add(new THREE.ConeGeometry(0.2, 0.9, 8), C.black, e[0] + 1.45, 0.3, e[2] + 1.45, 0, 0, -2.0);
+  B.sphere(C.black, 0.08, e[0] + 1.1, 0.75, e[2] + 0.55, 5, 4); B.sphere(C.black, 0.08, e[0] + 0.55, 0.75, e[2] + 1.1, 5, 4);
+  B.cyl(0x7fd6f5, 1.3, 1.3, 0.05, e[0] + 1.9, 0.02, e[2] + 1.9, 14);
+  B.cyl(0xf1dfb0, 1.6, 1.8, 0.04, e[0], 0, e[2], 14);   // sand landing pad at the chute exit
+  world.addCollider(X + 3.7, 1.2, Z, 2.8, 2.4, 2.2);      // body + legs (deck walkers are above it)
+  world.addCollider(X + 7.6, 1.2, Z - 0.1, 2.2, 1.6, 1.6);
+  world.addCollider(e[0] + 1.0, 0.5, e[2] + 1.0, 1.6, 1.1, 1.6);
+  const top = new THREE.Vector3(X + 1.6, H, Z);
+  world.landmarks.lookoutSlide = top.clone();
+  world.slides = world.slides || {}; world.slides.lookoutSlide = curve;
+  game?.interactables?.push({
+    position: top, radius: 2.4, label: 'Slide down!', sub: 'flamingo slide', kind: 'misc', id: 'lookoutSlide',
+    enabled: () => game.player?.state === 'walk' && game.player.position.y > H - 0.6,
+    onInteract: () => { game.events?.emit('play', { id: 'lookoutSlide' }); game.player?.slideAlong?.(curve, { id: 'lookoutSlide', duration: 2.6 }); },
+  });
+  sign(ctx, 'FLAMINGO SLIDE', X + 3.6, H + 1.1, Z - 1.2, 0, { w: 2.0, h: 0.4, bg: '#ff7bac', fg: '#ffffff', stroke: '#8e0040', border: '#ffffff' });
 }
 
 // ---------------- souvenir stand, snack cart, crates ----------------
@@ -197,6 +238,8 @@ function stands(ctx) {
   B.end();
   world.addCollider(-40, 1.6, 62, 5.4, 3.3, 3.8);
   sign(ctx, 'SOUVENIRS', -40, 3.75, 59.5, Math.PI, { w: 4.4, h: 1.0, bg: '#ffffff', fg: '#ff6fb5', stroke: '#1b5e20' });
+  sign(ctx, 'OPEN', -42.2, 1.75, 60.12, Math.PI, { w: 1.0, h: 0.4, bg: '#1b5e20', fg: '#ffd600', stroke: '#1b5e20', border: '#ffd600' });
+  world.landmarks.souvenirStand = new THREE.Vector3(-40, 0, 59.1);   // shopper stands here, facing the counter (north)
   // crates behind the stand (jump puzzle up to a gem)
   const crate = (x, z, h) => { B.box(C.wood2, 1.6, h, 1.6, x, 0, z); for (let y = 0.5; y < h; y += 1) B.box(C.green, 1.62, 0.18, 1.62, x, y - 0.09, z); world.addCollider(x, h / 2, z, 1.6, h, 1.6); world.addPlatform(x - 0.8, x + 0.8, z - 0.8, z + 0.8, h); };
   crate(-38.3, 65.3, 1.0); crate(-41.7, 65.3, 2.0);
@@ -210,7 +253,14 @@ function stands(ctx) {
   B.cyl(C.white, 0.32, 0.26, 0.5, 0.9, 2.2, 0, 8); for (let i = 0; i < 3; i++) B.beam(0xc98a3b, 0.9 + (i - 1) * 0.1, 2.5, (i - 1) * 0.1, 0.9 + (i - 1) * 0.3, 3.4, (i - 1) * 0.25, 0.06);
   B.end();
   world.addCollider(40, 1, 62, 3.4, 2, 2.2);
-  sign(ctx, 'CHURROS & ICE CREAM', 40, 2.1, 61.15, Math.PI, { w: 2.8, h: 0.5, bg: '#ffffff', fg: '#ff6fb5', stroke: '#1b5e20' });
+  // snack counter dressing: a striped awning off the cart's parasol and a menu board, so it reads as a shop
+  B.box(C.white, 3.4, 0.08, 1.4, 40, 2.35, 60.5); for (let i = 0; i < 4; i++) B.box(i % 2 ? C.hotpink : C.white, 0.85, 0.3, 0.1, 38.7 + i * 0.85, 2.05, 59.8);
+  B.cyl(C.white, 0.05, 0.05, 2.35, 38.4, 0, 59.85, 6); B.cyl(C.white, 0.05, 0.05, 2.35, 41.6, 0, 59.85, 6);
+  B.box(C.dark, 1.1, 1.4, 0.08, 43.2, 0.4, 60.8, 0.3); B.cyl(C.dark, 0.04, 0.04, 0.5, 43.2, 0, 60.85, 5);
+  world.addCollider(43.2, 0.9, 60.8, 1.2, 1.8, 0.4);
+  sign(ctx, 'SNACKS', 40, 2.72, 60.44, Math.PI, { w: 2.6, h: 0.62, bg: '#ffffff', fg: '#ff6fb5', stroke: '#1b5e20', border: '#ffd600' });
+  sign(ctx, 'CHURROS - ICE CREAM - SNO-CONES', 43.2, 1.1, 60.74, Math.PI - 0.3, { w: 1.0, h: 1.2, bg: '#263238', fg: '#ffd600', stroke: '#1b5e20', border: '#ffffff' });
+  world.landmarks.snackStand = new THREE.Vector3(40, 0, 58.6);       // shopper stands here, facing the cart (north)
 }
 
 // ---------------- flamingos + a friendly gator ----------------
@@ -242,12 +292,15 @@ function lagoonLife(ctx) {
 
 // ---------------- benches, trash cans, flower beds ----------------
 function furniture(ctx) {
-  const { B, rng } = ctx;
+  const { B, rng, world } = ctx;
+  let benchN = 0;
   const bench = (x, z, ry) => {
     B.begin(x, 0, z, ry);
     B.box(C.green, 1.8, 0.12, 0.5, 0, 0.48, 0); B.box(C.green, 1.8, 0.48, 0.1, 0, 0.6, -0.26, 0, -0.12);
     B.box(C.gold, 0.12, 0.85, 0.56, -0.85, 0, 0); B.box(C.gold, 0.12, 0.85, 0.56, 0.85, 0, 0);
     B.end();
+    // seat: the sitter's feet go on the ground just in front of the slats, looking along the bench's local +z
+    world.addSeat({ id: `bench${benchN++}`, position: new THREE.Vector3(x + Math.sin(ry) * 0.2, 0, z + Math.cos(ry) * 0.2), facing: ry, seatHeight: 0.6 });
   };
   const trash = (x, z) => { B.cyl(C.yellow, 0.4, 0.36, 0.85, x, 0, z, 10); B.cyl(C.green, 0.45, 0.45, 0.14, x, 0.85, z, 10); B.box(C.dark, 0.34, 0.1, 0.34, x, 0.97, z); };
   const bed = (x, z, w, d, ry = 0) => {
@@ -264,7 +317,7 @@ function furniture(ctx) {
   for (const a of [100, 140, 180, 220, 260, 300]) { const r = (a * Math.PI) / 180, x = Math.cos(r) * 8.8, z = FOUNTAIN.z + Math.sin(r) * 8.8; benches.push([x, z, Math.atan2(-Math.cos(r), -Math.sin(r))]); }
   benches.push([-14.6, 36, Math.PI / 2], [14.6, 36, -Math.PI / 2], [-14.6, 47, Math.PI / 2], [14.6, 47, -Math.PI / 2]);
   benches.push([-33, 65.3, Math.PI], [33, 65.3, Math.PI], [-28, -15.3, Math.PI], [28, -15.3, Math.PI]);
-  benches.push([-9, -31.5, Math.PI], [9, -31.5, Math.PI], [-36, 97.5, Math.PI], [36, 97.5, Math.PI], [-14, -80, Math.PI], [14, -80, Math.PI]);
+  benches.push([-9, -31.5, Math.PI], [9, -31.5, Math.PI], [-36, 97.5, Math.PI], [-14, -80, Math.PI], [14, -80, Math.PI]);   // (36, 97.5) is now the playground
   benches.push([37.5, -36, -Math.PI / 2], [-24, 80, Math.PI / 2], [24, 80, -Math.PI / 2]);
   benches.forEach(([x, z, ry], i) => { bench(x, z, ry); if (i % 2 === 0) trash(x + Math.cos(ry) * 1.5, z - Math.sin(ry) * 1.5); });
   // plaza ring beds (skip where paths leave the plaza)
@@ -283,11 +336,16 @@ function furniture(ctx) {
   B.cyl(C.stone, 1.1, 1.2, 1.0, 15, 0, -84, 12); B.cyl(0x6fb6ff, 0.9, 0.9, 0.1, 15, 0.9, -84, 12);
   B.cyl(C.wood, 0.1, 0.1, 2.2, 14.2, 1.0, -84, 6); B.cyl(C.wood, 0.1, 0.1, 2.2, 15.8, 1.0, -84, 6);
   B.cone(C.green, 1.6, 1.0, 15, 3.1, -84, 4, Math.PI / 4); B.box(C.wood, 1.8, 0.1, 1.8, 15, 3.0, -84);
+  ctx.world.addCollider(15, 0.6, -84, 2.5, 1.2, 2.5);
 }
 
-function beach({ B }) {
-  const umbrella = (x, z) => { B.cyl(C.white, 0.05, 0.05, 2.5, x, 0, z, 6); B.cone(C.hotpink, 1.7, 0.75, x, 2.2, z, 8); B.cone(C.yellow, 1.8, 0.32, x, 2.16, z, 8); B.sphere(C.yellow, 0.1, x, 3.0, z); };
-  const lounger = (x, z) => { B.box(C.yellow, 0.75, 0.12, 1.8, x, 0.3, z); B.box(C.yellow, 0.75, 0.7, 0.1, x, 0.3, z - 0.85, 0, -0.55); for (const [dx, dz] of [[-0.3, -0.8], [0.3, -0.8], [-0.3, 0.8], [0.3, 0.8]]) B.box(C.white, 0.08, 0.3, 0.08, x + dx, 0, z + dz); };
+function beach({ B, world }) {
+  let n = 0;
+  const umbrella = (x, z) => { B.cyl(C.white, 0.05, 0.05, 2.5, x, 0, z, 6); B.cone(C.hotpink, 1.7, 0.75, x, 2.2, z, 8); B.cone(C.yellow, 1.8, 0.32, x, 2.16, z, 8); B.sphere(C.yellow, 0.1, x, 3.0, z); world.addCollider(x, 1.2, z, 0.3, 2.4, 0.3); };
+  const lounger = (x, z) => {
+    B.box(C.yellow, 0.75, 0.12, 1.8, x, 0.3, z); B.box(C.yellow, 0.75, 0.7, 0.1, x, 0.3, z - 0.85, 0, -0.55); for (const [dx, dz] of [[-0.3, -0.8], [0.3, -0.8], [-0.3, 0.8], [0.3, 0.8]]) B.box(C.white, 0.08, 0.3, 0.08, x + dx, 0, z + dz);
+    world.addSeat({ id: `beachLounger${n++}`, position: new THREE.Vector3(x, 0, z + 0.3), facing: 0, seatHeight: 0.42, anim: 'sit' }, { label: 'Lie down', sub: 'sun lounger' });
+  };
   umbrella(-18, -34); lounger(-16.6, -34.2); lounger(-19.4, -34.2);
   umbrella(18, -34); lounger(19.4, -34.2);
 }
@@ -331,7 +389,7 @@ function palms(ctx) {
     const sc = rng.range(0.95, 1.3);
     q.setFromAxisAngle(_up, rng.range(0, Math.PI * 2)); s.set(sc, sc, sc); p.set(sp.x, terrainY(sp.x, sp.z) - 0.1, sp.z);
     mesh.setMatrixAt(i, m.compose(p, q, s));
-    if (colliders < 32 && onPath(sp.x, sp.z, 4)) { world.addCollider(sp.x, 3, sp.z, 0.9, 7, 0.9); colliders++; }
+    if (onPath(sp.x, sp.z, 5) || inReserved(sp.x, sp.z, 6) || sp.x > 118) { world.addCollider(sp.x, 3, sp.z, 0.9, 7, 0.9); colliders++; }
   });
   world.group.add(mesh);
 }
@@ -339,7 +397,7 @@ function palms(ctx) {
 // ---------------- lamp spots along paths; bunting hangs from separate tall poles midway between lamps ----------------
 function layoutLamps(ctx) {
   const spots = ctx.lampSpots, poles = (ctx.poleSpots = []);
-  const ok = (x, z) => !(onPath(x, z, 0.3) || inPlot(x, z, 0.3) || inWater(x, z, 1) || z > southWallZ(x) - 2.6 || Math.hypot(x, z - 100) < 9 || inWing(x, z, 0.5));
+  const ok = (x, z) => !(onPath(x, z, 0.3) || inPlot(x, z, 0.3) || inReserved(x, z, 0.5) || inWater(x, z, 1) || z > southWallZ(x) - 2.6 || Math.hypot(x, z - 100) < 9 || inWing(x, z, 0.5));
   for (const p of PATHS) {
     if (!p.lamps && !p.bunting) continue;
     const dx = p.b[0] - p.a[0], dz = p.b[1] - p.a[1], len = Math.hypot(dx, dz), nx = -dz / len, nz = dx / len, off = p.w / 2 + 1.3;
@@ -364,8 +422,9 @@ function layoutLamps(ctx) {
 }
 
 // candy-striped pennant poles (merged into the decor mesh); tops at 8.5 so the strings clear the camera
-function buntingPoles({ B, poleSpots }) {
+function buntingPoles({ B, poleSpots, world }) {
   for (const [x, top, z] of poleSpots) {
+    world.addCollider(x, top / 2, z, 0.4, top, 0.4);
     B.cyl(C.green, 0.3, 0.36, 0.25, x, 0, z, 8); B.cyl(C.yellow, 0.09, 0.11, top - 0.25, x, 0.25, z, 7);
     for (let y = 1.2; y < top - 0.6; y += 1.5) B.cyl(C.green, 0.115, 0.115, 0.5, x, y, z, 7);
     B.sphere(C.hotpink, 0.22, x, top + 0.1, z);
@@ -388,7 +447,9 @@ function lamps(ctx) {
     q.setFromAxisAngle(_up, rng.range(0, Math.PI * 2)); p.set(sp.x, sp.y, sp.z);
     posts.setMatrixAt(i, m.compose(p, q, s));
     glass.setMatrixAt(i, m.makeTranslation(sp.x, sp.y + 5.03, sp.z));
+    world.addCollider(sp.x, sp.y + 2.4, sp.z, 0.5, 4.8, 0.5);
   });
+  world.lampGlowMat = glowMat;   // the weather system brightens the lamp heads at night
   world.group.add(posts, glass);
 }
 

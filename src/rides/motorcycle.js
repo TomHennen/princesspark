@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { Ride } from './Ride.js';
 import { coloredMesh, mergeParts, canvasTexture, approach, wrapAngle } from './shared/vehicle.js';
+import { fitText, signMaterial, addInstanceColliders } from './shared/track.js';
 
 const N = 600;                 // centreline samples
 const HW = 4.2;                // half road width
@@ -188,11 +189,15 @@ export class Motorcycle extends Ride {
       ctx.fillStyle = '#fff';
       for (let x = 0; x < 32; x++) for (let y = 0; y < 6; y++) if ((x + y) % 2 && (y < 1 || y > 4)) ctx.fillRect(x * w / 32, y * h / 6, w / 32, h / 6);
       ctx.fillStyle = '#1b5e20'; ctx.fillRect(0, h / 6, w, h * 4 / 6);
-      ctx.fillStyle = '#ffd600'; ctx.font = 'bold 110px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('THUNDER BIKES', w / 2, h / 2 + 6);
+      ctx.fillStyle = '#ffd600'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const { lines } = fitText(ctx, this.name.toUpperCase(), w, h * 4 / 6, w * 0.86, (sz) => `bold ${sz}px sans-serif`);
+      lines.forEach((l, i) => ctx.fillText(l, w / 2, h / 2 + 6 + (i - (lines.length - 1) / 2) * h * 0.3));
     });
-    const banner = new THREE.Mesh(new THREE.PlaneGeometry(HW * 2 + 1.6, 1.6), new THREE.MeshStandardMaterial({ map: bannerTex, side: THREE.DoubleSide, roughness: 0.7 }));
-    banner.position.set(0, 4.9, 0); banner.rotation.y = -Math.PI / 2; banner.userData.noOcclude = true; gantry.add(banner);
+    // two single-sided faces back to back (a gap, not one DoubleSide plane) so the text reads right from both sides
+    for (const side of [-1, 1]) {
+      const banner = new THREE.Mesh(new THREE.PlaneGeometry(HW * 2 + 1.6, 1.6), signMaterial(bannerTex, { emissive: 0.15 }));
+      banner.position.set(side * 0.03, 4.9, 0); banner.rotation.y = -side * Math.PI / 2; banner.userData.noOcclude = true; banner.name = 'sign'; gantry.add(banner);
+    }
 
     // --- jump ramps (one InstancedMesh, wedge extruded from a triangle) ---
     const rampShape = new THREE.Shape(); rampShape.moveTo(0, 0); rampShape.lineTo(7, 0); rampShape.lineTo(7, 1.3); rampShape.lineTo(0, 0);
@@ -296,6 +301,23 @@ export class Motorcycle extends Ride {
     this.addBoxCollider(new THREE.Vector3(-3, 0.6, 23.5), new THREE.Vector3(48, 1.2, 0.6));
     this.addBoxCollider(new THREE.Vector3(26, 0.6, 23.5), new THREE.Vector3(2, 1.2, 0.6));
     this.addBoxCollider(new THREE.Vector3(0, 2, 27), new THREE.Vector3(34, 4, 5.2));
+    // gantry posts, palms, tyre stacks and the ramps are solid too
+    const gy = Math.atan2(tx[0], tz[0]);
+    for (const zl of [-HW - 1.2, HW + 1.2]) this.addBoxCollider(new THREE.Vector3(cx[0] + Math.sin(gy) * zl, 3, cz[0] + Math.cos(gy) * zl), new THREE.Vector3(0.7, 6, 0.7));
+    addInstanceColliders(this, trunks, { minW: 0.8, height: 3 });
+    addInstanceColliders(this, tyres, { minW: 1.1, height: 1.0, count: tyreSpots.length });
+    for (const r of this.ramps) { const k = (r.i0 + Math.floor(r.len / 2)) % N; this.addBoxCollider(new THREE.Vector3(cx[k], r.h / 2, cz[k]), new THREE.Vector3(6, r.h, 6)); }
+  }
+
+  /** A green-and-yellow bike for a remote rider; origin = rider's feet, +Z forward. */
+  makePeerVehicle() {
+    const wrap = new THREE.Group();
+    const m = buildMoto(GREEN, YELLOW);
+    m.group.position.set(0, -0.52, 0.4);   // undo the seat offset so the bike sits under the avatar
+    wrap.add(m.group);
+    wrap.userData.wheels = m.wheels; wrap.userData.flame = m.flame;
+    wrap.userData.dispose = () => { m.group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose?.(); } }); };
+    return wrap;
   }
 
   // ---------- placement helpers ----------

@@ -70,40 +70,58 @@ export function makeRng(seed = 1) {
   return rnd;
 }
 
-/** A sign board: text drawn to a canvas, shown on a plane of size w x h (world units). */
-export function makeTextSign(text, { w = 8, h = 2, bg = '#f48fb1', fg = '#ffd600', stroke = '#1b5e20', border = '#1b5e20', doubleSided = false, gap = 0.02 } = {}) {
+/** A sign board: text drawn to a canvas, shown on a plane of size w x h (world units).
+ *  Long text shrinks to fit (down to a minimum), then wraps onto two lines. Double-sided signs use two planes
+ *  ≥ 0.03 apart with polygon offset so they never z-fight; still keep a sign ≥ 0.05 clear of any wall behind it. */
+export function makeTextSign(text, { w = 8, h = 2, bg = '#f48fb1', fg = '#ffd600', stroke = '#1b5e20', border = '#1b5e20', doubleSided = false, gap = 0.03, minScale = 0.42 } = {}) {
   const canvas = document.createElement('canvas');
   canvas.width = 1024; canvas.height = Math.max(64, Math.round(1024 * h / w));
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height, r = Math.min(H * 0.25, 48);
+  const font = (size) => { ctx.font = `900 ${size}px "Arial Black", "Arial Rounded MT Bold", Impact, Arial, sans-serif`; };
+  const fits = (txt, size) => { font(size); return ctx.measureText(txt).width <= W * 0.88; };
+  // largest font size (≥ min) at which every line fits the plate width; null if even the minimum is too small
+  const fitSize = (lines, max, min) => { let size = max; while (size > min && !lines.every((l) => fits(l, size))) size *= 0.94; return lines.every((l) => fits(l, size)) ? size : null; };
+  // split into two lines at the space nearest the middle (by character count)
+  const wrap = (txt) => {
+    const words = txt.split(/\s+/).filter(Boolean); if (words.length < 2) return null;
+    let best = null, bestDiff = Infinity;
+    for (let i = 1; i < words.length; i++) { const a = words.slice(0, i).join(' '), b = words.slice(i).join(' '); const d = Math.abs(a.length - b.length); if (d < bestDiff) { bestDiff = d; best = [a, b]; } }
+    return best;
+  };
   const draw = (txt) => {
+    ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = border; roundRect(ctx, 0, 0, W, H, r); ctx.fill();
     ctx.fillStyle = bg; roundRect(ctx, 12, 12, W - 24, H - 24, r * 0.8); ctx.fill();
-    // auto-fit: shrink the font until the text fits the plate width
-    let size = H * 0.62;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const setFont = () => { ctx.font = `900 ${size}px "Arial Black", "Arial Rounded MT Bold", Impact, Arial, sans-serif`; };
-    setFont();
-    while (ctx.measureText(txt).width > W * 0.88 && size > 20) { size *= 0.94; setFont(); }
-    ctx.lineJoin = 'round'; ctx.lineWidth = size * 0.14; ctx.strokeStyle = stroke;
-    ctx.strokeText(txt, W / 2, H / 2 + size * 0.04);
-    ctx.fillStyle = fg; ctx.fillText(txt, W / 2, H / 2 + size * 0.04);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round'; ctx.strokeStyle = stroke;
+    const full = H * 0.62;
+    let lines = [txt], size = fitSize(lines, full, full * minScale);
+    if (size === null) {
+      const two = wrap(txt);
+      if (two) { lines = two; size = fitSize(lines, H * 0.4, 14) ?? 14; } else size = fitSize(lines, full, 14) ?? 14;
+    }
+    const lh = size * 1.08, y0 = H / 2 + size * 0.04 - (lines.length - 1) * lh / 2;
+    ctx.lineWidth = size * 0.14;
+    lines.forEach((l, i) => { ctx.strokeText(l, W / 2, y0 + i * lh); ctx.fillStyle = fg; ctx.fillText(l, W / 2, y0 + i * lh); });
   };
   draw(text);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
-  const mat = new THREE.MeshBasicMaterial({ map: tex, side: doubleSided ? THREE.DoubleSide : THREE.FrontSide });
+  // polygonOffset pulls the sign toward the camera in depth so a plate hung on a wall never z-fights with it
+  const mat = new THREE.MeshBasicMaterial({ map: tex, side: doubleSided ? THREE.DoubleSide : THREE.FrontSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
   const geo = new THREE.PlaneGeometry(w, h);
   let out;
   if (!doubleSided) out = new THREE.Mesh(geo, mat);
   else {
     // two planes back to back so the text reads correctly from both sides
+    const g = Math.max(0.03, gap);
     out = new THREE.Group();
-    const a = new THREE.Mesh(geo, mat); a.position.z = gap;
-    const b = new THREE.Mesh(geo, mat); b.position.z = -gap; b.rotation.y = Math.PI;
+    const a = new THREE.Mesh(geo, mat); a.position.z = g;
+    const b = new THREE.Mesh(geo, mat); b.position.z = -g; b.rotation.y = Math.PI;
     out.add(a, b);
   }
   out.userData.setText = (txt) => { draw(String(txt)); tex.needsUpdate = true; };
+  out.userData.sign = { w, h };
   return out;
 }
 

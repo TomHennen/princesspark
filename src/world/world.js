@@ -8,6 +8,8 @@ import { buildGround, buildPaths, buildWater } from './terrain.js';
 import { buildCastle } from './castle.js';
 import { buildProps } from './props.js';
 import { buildFlags } from './flags.js';
+import { buildHouse } from './house.js';
+import { buildPlayground } from './playground.js';
 import { WATER_PARK } from '../rides/index.js';
 
 const v = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -42,6 +44,11 @@ export class World {
       v(127, 0, -65),       // behind the wave pool, by the north-west palms
       v(197, 0, 81),        // far south-east corner of the wing, under the palms
     ];
+    this.seats = [];          // [{ id, position, facing, attachTo? }] — benches, loungers, swings (see CONTRACT round 2)
+    this.poolZones = [];      // Box3[] world space — pool decks where lifeguards shout at runners
+    this.lifeguardSpots = []; // [{ position, facing }] — lifeguard chair perches
+    this.weather = 'sunny';   // set by setWeather(); the sky module owns the actual lights/fog/particles
+    this.sky = null;
     this.swimsuit = false;    // true while the player is inside the water park in a swimsuit
     this.flagDefs = [];
     this.animated = [];
@@ -54,14 +61,50 @@ export class World {
   }
 
   build() {
-    buildSky(this);
+    this.sky = buildSky(this);
     this.group.add(buildGround(this));
     this.group.add(buildPaths(this));
     this.group.add(buildWater(this));
     this.group.add(buildCastle(this));
     buildProps(this);
+    buildHouse(this);
+    buildPlayground(this);
     const flags = buildFlags(this, this.flagDefs);
     if (flags) this.group.add(flags);
+    this.setWeather(this.game?.settings?.weather || 'sunny', true);
+  }
+
+  /** 'sunny' | 'cloudy' | 'rain' | 'storm' | 'sunset' | 'night' — sky, fog, lights, rain, lightning, lamp glow. */
+  setWeather(name, silent = false) {
+    if (!this.sky) return;
+    const w = this.sky.setWeather(name);
+    this.weather = w;
+    if (!silent) this.game?.events?.emit('weather:change', { weather: w });
+    return w;
+  }
+
+  /** Register a seat (bench, lounger, swing...) + its 'Sit' interactable. position = where the sitter's feet go. */
+  addSeat(seat, { label = 'Sit', sub, radius = 2 } = {}) {
+    this.seats.push(seat);
+    this.game?.interactables?.push({
+      position: seat.position, radius, label, sub, kind: 'misc', id: seat.id,
+      onInteract: () => this.game.player?.sitAt?.(seat),
+      enabled: () => this.game.player?.state === 'walk',
+    });
+    return seat;
+  }
+
+  /** Debug: wireframe boxes for every collider (red), platform (green) and camera blocker (blue). Call from the console. */
+  debugColliders(on = true) {
+    if (this._debug) { this.group.remove(this._debug); this._debug = null; }
+    if (!on) return;
+    const g = new THREE.Group(); g.name = 'debugColliders';
+    const add = (box, color) => { const h = new THREE.Box3Helper(box, color); h.material.depthTest = false; h.renderOrder = 999; g.add(h); };
+    for (const b of this.colliders) add(b, 0xff2244);
+    for (const b of this.cameraBlockers) add(b, 0x3388ff);
+    for (const p of this.platforms) add(new THREE.Box3(v(p.minX, p.top - 0.08, p.minZ), v(p.maxX, p.top + 0.02, p.maxZ)), 0x22ee66);
+    this._debug = g; this.group.add(g);
+    return g;
   }
 
   addCollider(cx, cy, cz, w, h, d) {

@@ -1,22 +1,31 @@
-// Quest system: tracks progress from game events, grants accessory unlocks, places the 12 hidden
-// Royal Gems, and persists everything to localStorage ('pk:save').
+// Quest system: tracks progress from game events, grants accessory unlocks, places the hidden Royal Gems,
+// runs the DAY system (quests.day, quests.trySleep()) and persists everything to localStorage ('pk:save').
 // Quest text that mentions the princesses or the park reads game.settings at display time (see questTitle),
 // so renaming a princess updates the objective and the next toast immediately.
+//
+// Days: day 1 is the classic quest list (QUEST_DEFS, accessory unlocks). Day 2 and 3 are hand-written lists
+// built on the round-2 events (snacks, shops, playground, seats, slides, weather, lifeguards). From day 4 on a
+// daily set of 5 is drawn from a pool, deterministically by day number. Per-day counters live in
+// state.dayStats and reset every morning; lifetime stats (ridesRidden, gems, lapsBest…) never reset.
 import * as THREE from 'three';
 import { ACCESSORIES } from '../core/avatar.js';
 import { DEFAULT_SETTINGS } from '../core/settings.js';
+import { Items } from './items.js';
 
 export const SAVE_KEY = 'pk:save';
 export const PRINCESS_IDS = ['p1', 'p2'];
 // Accessories everyone has from the start; everything else in ACCESSORIES must be unlocked by a quest.
 export const BASE_ACCESSORIES = ['none', 'tiara', 'bunnyEars'];
 export const RIDE_IDS = ['coaster', 'logflume', 'carousel', 'ferris', 'teacups', 'lightcycle', 'motorcycle', 'waterslide', 'lazyriver'];
+export const WATER_RIDE_IDS = ['waterslide', 'lazyriver'];
 export const GEM_TOTAL = 14; // matches world.gemSpots.length (12 in the main park + 2 in Splash Cove)
+export const PLAYGROUND_TOTAL = 5; // swing, slide, spinner, seesaw, climb (world emits `play` { id })
 
 export const ACCESSORY_NAMES = {
   halo: 'Halo', wings: 'Fairy Wings', crown: 'Royal Crown', wizardHat: 'Wizard Hat',
   sunglasses: 'Cool Shades', catEars: 'Cat Ears', cape: 'Hero Cape', tiara: 'Tiara', bunnyEars: 'Bunny Ears',
 };
+const SNACK_ITEMS = ['iceCream', 'cottonCandy', 'pretzel', 'lemonade'];
 
 // Princess records from settings (always two; falls back to defaults if settings are missing).
 function princesses(settings) {
@@ -27,8 +36,10 @@ function princesses(settings) {
 export function questTitle(q, settings) {
   return typeof q.title === 'function' ? q.title(settings || DEFAULT_SETTINGS) : q.title;
 }
+const uniq = (arr, v) => { if (!arr.includes(v)) arr.push(v); return arr.length; };
 
-// Ordered quest list. `progress(state)` derives progress purely from saved state so it survives reloads.
+// ---------- day 1: the classic list ----------
+// `progress(state, dayStats)` derives progress purely from saved state so it survives reloads.
 // `title` is a string or `(settings) => string`; always display it through questTitle().
 export const QUEST_DEFS = [
   { id: 'meet', title: (st) => `Say hi to Princess ${princesses(st)[0].name} and Princess ${princesses(st)[1].name}`, total: 2,
@@ -57,17 +68,108 @@ export const QUEST_DEFS = [
     progress: (s) => QUEST_DEFS.filter((q) => q.id !== 'royal' && s.completed.includes(q.id)).length },
 ];
 
+// ---------- day 2+ quest builders (per-day counters in dayStats `d`) ----------
+// Each builder returns a def; `hint` is a plain-language tip the princesses read out ("What should I do next?").
+const Q = {
+  snacks: (n) => ({ id: 'snacks', title: `Eat ${n} snacks from the Snack Stand`, total: n, progress: (s, d) => d.snacks,
+    hint: 'The Snack Stand is by the entrance. Grab a treat, then press E (or tap ✦) to eat it. Sugar rush!' }),
+  squish: (n) => ({ id: 'squish', title: `Squish a Needoh ${n} times`, total: n, progress: (s, d) => d.squishes,
+    hint: 'Get a Needoh at the Souvenir Shop near the entrance, then press E (or tap ✦) to squish it. So squishy.' }),
+  play: (n, again) => ({ id: again ? 'play-again' : 'play', title: again ? 'Visit every playground thing again' : `Play on ${n} different playground things`, total: n, progress: (s, d) => d.played.length,
+    hint: 'The playground has a swing, a slide, a spinner, a seesaw and a climbing frame. Press E on each one.' }),
+  sit: (n) => ({ id: 'sit', title: `Sit on ${n} benches`, total: n, progress: (s, d) => d.sits.length,
+    hint: 'Walk up to any bench or lounger and press E to sit. X stands you back up.' }),
+  slide: (n = 1) => ({ id: 'slide', title: n > 1 ? `Zoom down the flamingo slide ${n} times` : 'Zoom down the flamingo slide', total: n, progress: (s, d) => d.slideCount,
+    hint: 'Climb the Flamingo Lookout steps by the lagoon and press E at the top of the big slide.' }),
+  weather: (n) => ({ id: 'weather', title: `Change the weather ${n} times`, total: n, progress: (s, d) => d.weatherChanges,
+    hint: 'Press K or tap the ☀️ button to pick the weather. Try Night — the park lights come on.' }),
+  waterRides: () => ({ id: 'water-rides', title: 'Ride every water ride', total: WATER_RIDE_IDS.length, progress: (s, d) => WATER_RIDE_IDS.filter((r) => d.rides.includes(r)).length,
+    hint: 'Splash Cove is the east wing: Flamingo Falls and the Lazy Lagoon River both count.' }),
+  gems: (n) => ({ id: 'sunset-gems', title: `Find ${n} Sunset Gems`, total: n, gems: n, progress: (s, d) => d.gems.length,
+    hint: 'Orange Sunset Gems glow in some of the old gem spots. Look for the orange ring on the ground.' }),
+  thrown: () => ({ id: 'thrown', title: 'Get thrown out of the teacups', total: 1, progress: (s, d) => Math.min(1, d.thrown),
+    hint: 'At the Tipsy Teacups, pick the button that says not to press it. Then hold on. Or don\'t.' }),
+  fastLap: () => ({ id: 'fast-lap', title: (st, d) => `Beat a Thunder Bikes lap under ${d?.lapTarget ?? 30}s`, total: 1, progress: (s, d) => d.fastLap,
+    hint: 'Thunder Bikes: hold boost on the straights and ease off into the turns. Hit the ramps for air.' }),
+  nightCoaster: () => ({ id: 'night-coaster', title: 'Ride the coaster at night', total: 1, progress: (s, d) => Math.min(1, d.nightCoaster),
+    hint: 'Set the weather to Night (press K), then ride Dragon\'s Breath Coaster all the way round.' }),
+  balloonTalk: () => ({ id: 'balloon-talk', title: (st) => `Talk to Princess ${princesses(st)[0].name} and Princess ${princesses(st)[1].name} with a balloon`, total: 2, progress: (s, d) => d.balloonTalks.length,
+    hint: 'Get a balloon from the Souvenir Shop, then say hi to both princesses at the gazebo while holding it.' }),
+  warns: (n) => ({ id: 'warns', title: `Make the lifeguard yell at you ${n} times`, total: n, progress: (s, d) => d.warns,
+    hint: 'Run (hold Shift) on the pool deck in Splash Cove. The lifeguards do NOT like that.' }),
+  rides: (n) => ({ id: 'rides', title: `Ride ${n} rides`, total: n, progress: (s, d) => d.rideCount,
+    hint: 'Any ride counts, even the same one twice. Ride it all the way to the end.' }),
+  coaster: (n) => ({ id: 'coaster', title: `Ride the coaster ${n} times`, total: n, progress: (s, d) => d.perRide.coaster || 0,
+    hint: 'Dragon\'s Breath Coaster is in the northwest. Keep your eyes open on the drop.' }),
+  laps: (n) => ({ id: 'laps', title: `Finish ${n} laps on Thunder Bikes or Grid Riders`, total: n, progress: (s, d) => d.laps,
+    hint: 'Thunder Bikes (southeast) and Grid Riders (southwest) both count laps.' }),
+  wand: (n) => ({ id: 'wand', title: `Wave a glow wand ${n} times`, total: n, progress: (s, d) => d.sparkles,
+    hint: 'The Souvenir Shop has glow wands. Press E (or tap ✦) to wave it. Sparkles!' }),
+  talkBoth: () => ({ id: 'talk-both', title: (st) => `Visit Princess ${princesses(st)[0].name} and Princess ${princesses(st)[1].name}`, total: 2, progress: (s, d) => d.talked.length,
+    hint: 'The princesses are at the gazebo in Princess Plaza. Say hi to both.' }),
+  walk: (m) => ({ id: 'walk', title: `Walk ${m} metres around the park`, total: m, progress: (s, d) => Math.floor(d.walked),
+    hint: 'Just explore! Every step counts. Splash Cove is a nice long walk.' }),
+};
+const royal = (day, n) => ({ id: day === 1 ? 'royal' : `d${day}-royal`, title: 'Complete every quest', total: n, royalDay: day,
+  reward: day === 1 ? { royal: true, text: 'You earned the Royal Keys!' } : { day: true, text: `Day ${day} complete! Sleep in your bed to start Day ${day + 1}.` },
+  progress: () => 0 }); // real progress is computed in progressOf() (counts the day's other quests)
+
+const DAY_LISTS = {
+  2: () => [Q.snacks(3), Q.squish(10), Q.play(4), Q.sit(3), Q.slide(1), Q.weather(3), Q.waterRides(), Q.gems(5)],
+  3: () => [Q.thrown(), Q.fastLap(), Q.nightCoaster(), Q.balloonTalk(), Q.warns(3), Q.play(PLAYGROUND_TOTAL, true)],
+};
+// Day 4+: a pool of builders; 5 are drawn per day with a seeded shuffle so the list is stable across reloads.
+const POOL = [
+  () => Q.snacks(2 + (Math.random() * 3 | 0)), () => Q.squish(5 + (Math.random() * 11 | 0)), () => Q.play(3 + (Math.random() * 3 | 0)),
+  () => Q.sit(2 + (Math.random() * 3 | 0)), () => Q.slide(1 + (Math.random() * 2 | 0)), () => Q.weather(2 + (Math.random() * 2 | 0)),
+  () => Q.waterRides(), () => Q.gems(3 + (Math.random() * 4 | 0)), () => Q.thrown(), () => Q.fastLap(), () => Q.nightCoaster(),
+  () => Q.balloonTalk(), () => Q.warns(2 + (Math.random() * 2 | 0)), () => Q.rides(3 + (Math.random() * 3 | 0)),
+  () => Q.coaster(2 + (Math.random() * 2 | 0)), () => Q.laps(3 + (Math.random() * 4 | 0)), () => Q.wand(5 + (Math.random() * 6 | 0)),
+  () => Q.talkBoth(), () => Q.walk(300 + 100 * (Math.random() * 5 | 0)),
+];
+function seededRng(seed) { let s = (seed * 2654435761 + 12345) >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+
+/** The quest list for `day` (ids are prefixed `d<N>-` from day 2 so completions never collide across days). */
+export function questsForDay(day) {
+  let list;
+  if (day <= 1) return QUEST_DEFS;
+  if (DAY_LISTS[day]) list = DAY_LISTS[day]();
+  else {
+    const rng = seededRng(day);
+    const realRandom = Math.random; Math.random = rng;   // the builders' size rolls use the seeded stream
+    try {
+      const idx = POOL.map((_, i) => i);
+      for (let i = idx.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+      list = idx.slice(0, 5).map((i) => POOL[i]());
+    } finally { Math.random = realRandom; }
+  }
+  list = list.map((q) => ({ ...q, id: `d${day}-${q.id}`, reward: q.reward || { text: 'Nice one!' } }));
+  list.push(royal(day, list.length));
+  return list;
+}
+
 const GEM_COLORS = [
   { color: '#ff6fb5', emissive: '#ff6fb5' },   // pink
   { color: '#f9d71c', emissive: '#f9d71c' },   // yellow
   { color: '#0b5d3b', emissive: '#2ecc71' },   // deep green (brighter glow so it reads in shade)
   { color: '#00c2c7', emissive: '#00e5ea' },   // cyan
 ];
+const SUNSET_GEM = { color: '#ff8c42', emissive: '#ff7a1a' };
 
 function defaultSave() {
   return {
-    ridesRidden: [], gems: [], completed: [], unlockedAccessories: [], lapsBest: {}, talkedTo: [],
+    day: 1, ridesRidden: [], gems: [], completed: [], unlockedAccessories: [], lapsBest: {}, talkedTo: [],
     stats: { rideCount: 0, crashes: 0, laps: 0, perRide: {} },
+    dayStats: defaultDayStats(),
+  };
+}
+// Per-day counters (reset every morning by startDay).
+function defaultDayStats(lapsBest = {}) {
+  const best = lapsBest.motorcycle;
+  return {
+    snacks: 0, squishes: 0, sparkles: 0, played: [], sits: [], slideCount: 0, weatherChanges: 0, rides: [], perRide: {}, rideCount: 0,
+    gems: [], warns: 0, thrown: 0, fastLap: 0, nightCoaster: 0, balloonTalks: [], talked: [], laps: 0, walked: 0,
+    lapTarget: best ? Math.max(8, Math.ceil(best) - 1) : 30,
   };
 }
 
@@ -83,26 +185,47 @@ export class Quests {
     this.state = defaultSave();
     this.state.royal = false;
     this.recentCompletions = [];   // quest ids completed since an NPC last reacted (in-memory)
-    this.gems = [];                // [{ id, position: Vector3 (ground), group, found }]
+    this.gems = [];                // royal gems [{ id, position: Vector3 (ground), group, found }]
+    this.dayGems = [];             // this day's Sunset Gems (same shape)
     this.fx = [];                  // active particle bursts
     this.group = new THREE.Group();
     this.group.name = 'quests:gems';
     this._lastProgress = {};
     this._saveTimer = null;
+    this._defsDay = 0; this._defs = QUEST_DEFS;
+    this.sleeping = false;
+    this.items = new Items(game);  // shops + hand-held item actions (src/quests/items.js)
     this.load();
   }
 
   // ---------- public getters ----------
   get settings() { return this.game.settings || DEFAULT_SETTINGS; }
+  get day() { return this.state.day; }
   get gemsFound() { return this.state.gems.length; }
   get unlockedAccessories() { return this.state.unlockedAccessories; }
-  isComplete(id) { return this.state.completed.includes(id); }
-  progress(id) {
-    const q = QUEST_DEFS.find((q) => q.id === id);
-    if (!q) return { progress: 0, total: 0 };
-    return { progress: this.isComplete(id) ? q.total : q.progress(this.state), total: q.total };
+  get dayStats() { return this.state.dayStats; }
+  /** Quest defs for the current day. */
+  dayQuests() {
+    if (this._defsDay !== this.state.day) { this._defsDay = this.state.day; this._defs = questsForDay(this.state.day); }
+    return this._defs;
   }
-  activeQuest() { return QUEST_DEFS.find((q) => !this.isComplete(q.id)) || null; }
+  questById(id) { return this.dayQuests().find((q) => q.id === id) || QUEST_DEFS.find((q) => q.id === id) || null; }
+  isComplete(id) { return this.state.completed.includes(id); }
+  progressOf(q) {
+    if (this.isComplete(q.id)) return q.total;
+    if (q.royalDay) return this.dayQuests().filter((o) => !o.royalDay && this.state.completed.includes(o.id)).length;
+    return Math.min(q.total, q.progress(this.state, this.state.dayStats) || 0);
+  }
+  progress(id) {
+    const q = this.questById(id);
+    if (!q) return { progress: 0, total: 0 };
+    return { progress: this.progressOf(q), total: q.total };
+  }
+  title(q) { return typeof q.title === 'function' ? q.title(this.settings, this.state.dayStats) : q.title; }
+  activeQuest() { return this.dayQuests().find((q) => !this.isComplete(q.id)) || null; }
+  /** Incomplete quests of the current day (the royal "complete every quest" one excluded). */
+  remainingToday() { return this.dayQuests().filter((q) => !q.royalDay && !this.isComplete(q.id)); }
+  dayComplete() { return this.remainingToday().length === 0; }
   isUnlocked(accessory) { return BASE_ACCESSORIES.includes(accessory) || this.state.unlockedAccessories.includes(accessory); }
   // Dialogue helper: returns quests completed since last call and clears the list.
   takeRecentCompletions() { const r = this.recentCompletions; this.recentCompletions = []; return r; }
@@ -117,19 +240,23 @@ export class Quests {
         for (const k of ['ridesRidden', 'gems', 'completed', 'unlockedAccessories', 'talkedTo']) if (Array.isArray(d[k])) s[k] = d[k];
         if (d.lapsBest && typeof d.lapsBest === 'object') s.lapsBest = d.lapsBest;
         if (d.stats && typeof d.stats === 'object') s.stats = { ...s.stats, ...d.stats, perRide: { ...(d.stats.perRide || {}) } };
+        s.day = Math.max(1, Math.floor(Number(d.day) || 1));                 // old saves → day 1
+        s.dayStats = { ...defaultDayStats(s.lapsBest), ...((d.dayStats && typeof d.dayStats === 'object') ? d.dayStats : {}) };
+        for (const k of ['played', 'sits', 'rides', 'gems', 'balloonTalks', 'talked']) if (!Array.isArray(s.dayStats[k])) s.dayStats[k] = [];
+        if (!s.dayStats.perRide || typeof s.dayStats.perRide !== 'object') s.dayStats.perRide = {};
         this.state = s;
         this.hadSave = true;
       }
     } catch (e) { console.warn('[quests] failed to load save', e); }
     this.state.royal = this.state.completed.includes('royal');
-    for (const q of QUEST_DEFS) this._lastProgress[q.id] = this.progress(q.id).progress;
+    for (const q of this.dayQuests()) this._lastProgress[q.id] = this.progressOf(q);
   }
   save() {
     clearTimeout(this._saveTimer); this._saveTimer = null;
     const s = this.state;
     const data = {
-      ridesRidden: s.ridesRidden, gems: s.gems, completed: s.completed, unlockedAccessories: s.unlockedAccessories,
-      lapsBest: s.lapsBest, talkedTo: s.talkedTo, stats: s.stats,
+      day: s.day, ridesRidden: s.ridesRidden, gems: s.gems, completed: s.completed, unlockedAccessories: s.unlockedAccessories,
+      lapsBest: s.lapsBest, talkedTo: s.talkedTo, stats: s.stats, dayStats: s.dayStats,
     };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) { console.warn('[quests] failed to save', e); }
   }
@@ -140,46 +267,80 @@ export class Quests {
 
   // ---------- lifecycle ----------
   start() {
-    const g = this.game;
+    const g = this.game, ev = g.events;
     g.scene.add(this.group);
     this.placeGems();
-    g.events.on('ride:complete', ({ ride }) => this.onRideComplete(ride));
-    g.events.on('npc:talk', ({ npc }) => { if (npc && !this.state.talkedTo.includes(npc)) { this.state.talkedTo.push(npc); this.changed(); } });
-    g.events.on('drive:lap', ({ ride, lapTime }) => {
-      this.state.stats.laps++;
-      if (ride && typeof lapTime === 'number' && (this.state.lapsBest[ride] == null || lapTime < this.state.lapsBest[ride])) {
-        this.state.lapsBest[ride] = Math.round(lapTime * 100) / 100;
-        if (this.state.stats.laps > 1) g.ui.toast?.(`New best lap: ${this.state.lapsBest[ride].toFixed(1)}s`);
+    this.placeDayGems();
+    this.items.start();
+    g.items = this.items;
+    const ds = () => this.state.dayStats;
+    ev.on('ride:complete', ({ ride }) => this.onRideComplete(ride));
+    ev.on('ride:exit', ({ ride }) => { if (ride === 'teacups') this._teacupExitAt = g.time; });
+    ev.on('player:landed', () => { if (this._teacupExitAt != null && g.time - this._teacupExitAt < 10) { this._teacupExitAt = null; ds().thrown++; this.changed(); } });
+    ev.on('npc:talk', ({ npc }) => {
+      if (!npc) return;
+      const s = this.state;
+      if (!s.talkedTo.includes(npc)) s.talkedTo.push(npc);
+      if (PRINCESS_IDS.includes(npc)) {
+        uniq(ds().talked, npc);
+        if (this.heldItem() === 'balloon') uniq(ds().balloonTalks, npc);
       }
-      this.scheduleSave();
+      this.changed();
     });
-    g.events.on('drive:crash', () => { this.state.stats.crashes++; this.scheduleSave(); });
-    g.events.on('game:start', ({ config } = {}) => {
+    ev.on('drive:lap', ({ ride, lapTime }) => {
+      this.state.stats.laps++;
+      ds().laps++;
+      if (ride && typeof lapTime === 'number') {
+        if (this.state.lapsBest[ride] == null || lapTime < this.state.lapsBest[ride]) {
+          this.state.lapsBest[ride] = Math.round(lapTime * 100) / 100;
+          if (this.state.stats.laps > 1) g.ui.toast?.(`New best lap: ${this.state.lapsBest[ride].toFixed(1)}s`);
+        }
+        if (ride === 'motorcycle' && lapTime < ds().lapTarget) ds().fastLap = 1;
+      }
+      this.changed();
+    });
+    ev.on('drive:crash', () => { this.state.stats.crashes++; this.scheduleSave(); });
+    // round-2 events
+    ev.on('snack:eat', () => { ds().snacks++; this.changed(); });
+    ev.on('item:use', ({ item }) => { if (item === 'needoh') ds().squishes++; else if (item === 'wand') ds().sparkles++; else return; this.changed(); });
+    ev.on('play', ({ id } = {}) => { uniq(ds().played, id || `thing-${ds().played.length}`); this.changed(); });
+    ev.on('seat:sit', ({ id } = {}) => { uniq(ds().sits, id || `seat-${ds().sits.length}`); this.changed(); });
+    ev.on('slide:end', ({ id } = {}) => { if (!id || /lookout|flamingo/i.test(id)) ds().slideCount++; this.changed(); });
+    ev.on('weather:change', () => { if (!g.started) return; ds().weatherChanges++; this.changed(); });
+    ev.on('lifeguard:warn', () => { ds().warns++; this.changed(); });
+    ev.on('game:start', ({ config } = {}) => {
       const name = config?.name || g.player?.config?.name || 'Explorer';
-      g.ui.toast?.(this.hadSave ? `Welcome back, ${name}!` : `Welcome to ${this.settings.parkName}, ${name}!`);
+      g.ui.toast?.(this.hadSave ? `Welcome back, ${name}!${this.state.day > 1 ? ` It's Day ${this.state.day}.` : ''}` : `Welcome to ${this.settings.parkName}, ${name}!`);
       this.refreshObjective();
     });
     // Princess names live in quest titles, so re-render the objective when settings change.
-    g.events.on('settings:change', () => this.refreshObjective());
+    ev.on('settings:change', () => this.refreshObjective());
     window.addEventListener('pagehide', () => { if (this._saveTimer) this.save(); });
     this.refreshObjective();
   }
 
+  heldItem() { return this.game.player?.config?.held || this.game.player?.avatar?.config?.held || 'none'; }
+  currentWeather() { return this.game.world?.weather || this.settings.weather || 'sunny'; }
+
   onRideComplete(ride) {
     if (!ride) return;
-    const s = this.state;
+    const s = this.state, d = s.dayStats;
     s.stats.rideCount++;
     s.stats.perRide[ride] = (s.stats.perRide[ride] || 0) + 1;
     if (!s.ridesRidden.includes(ride)) s.ridesRidden.push(ride);
+    d.rideCount++;
+    d.perRide[ride] = (d.perRide[ride] || 0) + 1;
+    uniq(d.rides, ride);
+    if (ride === 'coaster' && this.currentWeather() === 'night') d.nightCoaster++;
     this.changed();
   }
 
   // Re-evaluate every quest after any state change; emits progress/complete/unlock events and saves.
   changed() {
     const g = this.game;
-    for (const q of QUEST_DEFS) {
+    for (const q of this.dayQuests()) {
       if (this.isComplete(q.id)) continue;
-      const p = Math.min(q.total, q.progress(this.state));
+      const p = this.progressOf(q);
       if (p !== this._lastProgress[q.id]) {
         this._lastProgress[q.id] = p;
         g.events.emit('quest:progress', { id: q.id, progress: p, total: q.total });
@@ -192,15 +353,17 @@ export class Quests {
 
   completeQuest(q) {
     const g = this.game;
+    if (this.isComplete(q.id)) return;
     this.state.completed.push(q.id);
     this.recentCompletions.push(q.id);
     if (q.reward.royal) this.state.royal = true;
-    const title = questTitle(q, this.settings);
-    g.events.emit('quest:complete', { id: q.id, title, reward: q.reward });
+    const title = this.title(q);
+    g.events.emit('quest:complete', { id: q.id, title, reward: q.reward, day: this.state.day });
     g.ui.toast?.(`Quest complete: ${title}`);
     g.audio?.play?.('quest');
     for (const acc of q.reward.accessories || []) this.unlock(acc);
-    if (q.reward.text && !q.reward.accessories?.length) setTimeout(() => g.ui.toast?.(q.reward.text), 900);
+    if (q.reward.text && !q.reward.accessories?.length) setTimeout(() => g.ui.toast?.(q.reward.text, q.reward.day ? 5000 : 2600), 900);
+    if (q.royalDay && q.royalDay > 1) g.ui.celebrate?.(`Day ${q.royalDay} complete! 🌙`);
   }
 
   unlock(accessory) {
@@ -215,11 +378,66 @@ export class Quests {
 
   objectiveText() {
     const q = this.activeQuest();
-    if (!q) return 'All quests complete — you hold the Royal Keys!';
+    const day = this.state.day;
+    if (!q) return day === 1 ? 'All quests complete — you hold the Royal Keys! Sleep at home for Day 2' : `Day ${day} done — sleep in your bed for Day ${day + 1}`;
     const { progress, total } = this.progress(q.id);
-    return `${questTitle(q, this.settings)} — ${progress}/${total}`;
+    return `Day ${day} · ${this.title(q)} — ${progress}/${total}`;
   }
   refreshObjective() { this.game.ui.setObjective?.(this.objectiveText()); }
+
+  // ---------- days ----------
+  /**
+   * Called by the bed in the player's house. If every quest of the day is done: fade out, advance the day,
+   * show the "Day N" card and resolve true. Otherwise shows what is left and returns false (synchronously).
+   */
+  trySleep() {
+    const g = this.game;
+    if (this.sleeping) return false;
+    const left = this.remainingToday();
+    if (left.length) {
+      // pack the remaining titles onto a few lines (≤ ~100 chars each) so the box doesn't take 9 pages to read
+      const lines = [];
+      for (const q of left) {
+        const t = `• ${this.title(q)}`;
+        if (lines.length && (lines[lines.length - 1] + '   ' + t).length <= 100) lines[lines.length - 1] += '   ' + t;
+        else lines.push(t);
+      }
+      g.ui.dialogue?.([`You still have ${left.length === 1 ? 'one thing' : `${left.length} things`} to do today!`, ...lines.slice(0, 5)], { speaker: 'Bed', color: '#9b59b6' });
+      return false;
+    }
+    this.sleeping = true;
+    return (async () => {
+      const next = this.state.day + 1;
+      g.audio?.play?.('sleep');
+      g.ui.lock?.('sleep');
+      try {
+        await (g.ui.fade?.(900) ?? Promise.resolve());
+        await (g.ui.titleCard?.('Good night…', `Day ${this.state.day} is over. Sweet dreams! 💤`, 2200) ?? Promise.resolve());
+        this.startDay(next);
+        const q = this.activeQuest();
+        await (g.ui.titleCard?.(`Day ${next}`, q ? `First up: ${this.title(q)}` : 'A brand new day!', 2400) ?? Promise.resolve());
+        await (g.ui.fade?.(900, 'in') ?? Promise.resolve());
+      } finally { g.ui.unlock?.('sleep'); this.sleeping = false; }
+      const q = this.activeQuest();
+      if (q) g.ui.toast?.(`Day ${next}: ${this.title(q)}`, 4000);
+      return true;
+    })();
+  }
+
+  /** Jump straight to `day`: resets per-day counters, loads that day's quests and its Sunset Gems. */
+  startDay(day) {
+    const s = this.state;
+    s.day = Math.max(1, Math.floor(day));
+    s.dayStats = defaultDayStats(s.lapsBest);
+    this.recentCompletions = [];   // yesterday's news — the princesses give the morning briefing instead
+    this._defsDay = 0;
+    this._lastProgress = {};
+    for (const q of this.dayQuests()) this._lastProgress[q.id] = this.progressOf(q);
+    this.placeDayGems();
+    this.refreshObjective();
+    this.game.events.emit('day:change', { day: s.day });
+    this.save();
+  }
 
   // ---------- gems ----------
   gemSpots() {
@@ -230,22 +448,43 @@ export class Quests {
     for (let i = 0; i < GEM_TOTAL; i++) { const a = (i / GEM_TOTAL) * Math.PI * 2; out.push(new THREE.Vector3(Math.cos(a) * 40, 0, Math.sin(a) * 40)); }
     return out;
   }
+  groundedSpot(spot) {
+    const pos = new THREE.Vector3(spot.x, spot.y ?? 0, spot.z);
+    pos.y = this.game.world?.getGroundHeight?.(pos.x, pos.z, pos.y + 1) ?? pos.y;
+    return pos;
+  }
 
   placeGems() {
-    const world = this.game.world;
     this.gemSpots().forEach((spot, i) => {
       const id = `gem-${i}`;
-      const pos = new THREE.Vector3(spot.x, spot.y ?? 0, spot.z);
-      pos.y = world?.getGroundHeight?.(pos.x, pos.z, pos.y + 1) ?? pos.y;
       const found = this.state.gems.includes(id);
-      const gem = { id, index: i, position: pos, found, group: null, crystal: null, ring: null };
+      const gem = { id, index: i, position: this.groundedSpot(spot), found, group: null, crystal: null, ring: null, sunset: false };
       if (!found) this.buildGem(gem);
       this.gems.push(gem);
     });
   }
 
+  /** Sunset Gems: a day quest with `gems: N` re-uses N of the royal gem spots (seeded by day) in orange. */
+  placeDayGems() {
+    for (const g of this.dayGems) if (g.group) this.group.remove(g.group);
+    this.dayGems = [];
+    const q = this.dayQuests().find((q) => q.gems);
+    if (!q || this.isComplete(q.id)) return;
+    const spots = this.gemSpots();
+    const rng = seededRng(this.state.day * 7 + 3);
+    const idx = spots.map((_, i) => i);
+    for (let i = idx.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+    idx.slice(0, q.gems).forEach((spotIndex, i) => {
+      const id = `sun-d${this.state.day}-${spotIndex}`;
+      const found = this.state.dayStats.gems.includes(id);
+      const gem = { id, index: i, position: this.groundedSpot(spots[spotIndex]), found, group: null, crystal: null, ring: null, sunset: true };
+      if (!found) this.buildGem(gem);
+      this.dayGems.push(gem);
+    });
+  }
+
   buildGem(gem) {
-    const c = GEM_COLORS[gem.index % GEM_COLORS.length];
+    const c = gem.sunset ? SUNSET_GEM : GEM_COLORS[gem.index % GEM_COLORS.length];
     const group = new THREE.Group();
     group.position.copy(gem.position);
     const crystal = new THREE.Mesh(gemGeo, new THREE.MeshStandardMaterial({
@@ -268,10 +507,20 @@ export class Quests {
     const g = this.game;
     gem.found = true;
     if (gem.group) { this.group.remove(gem.group); gem.group = null; }
+    if (gem.sunset) {
+      uniq(this.state.dayStats.gems, gem.id);
+      const q = this.dayQuests().find((q) => q.gems);
+      g.audio?.play?.('gem');
+      g.events.emit('gem:found', { id: gem.id, position: gem.position.clone(), kind: 'sunset' });
+      g.ui.toast?.(`Sunset Gem found! (${this.state.dayStats.gems.length}/${q?.gems || '?'})`);
+      this.burst(gem.position, SUNSET_GEM.emissive);
+      this.changed();
+      return;
+    }
     if (!this.state.gems.includes(gem.id)) this.state.gems.push(gem.id);
     const n = this.state.gems.length;
     g.audio?.play?.('gem');
-    g.events.emit('gem:found', { id: gem.id, position: gem.position.clone() });
+    g.events.emit('gem:found', { id: gem.id, position: gem.position.clone(), kind: 'royal' });
     g.ui.toast?.(`Royal Gem found! (${n}/${GEM_TOTAL})`);
     // Milestone cheers from the two hosts; p2 (the hype one) leads with her catchphrase when she has one.
     if (n === Math.floor(GEM_TOTAL / 3)) setTimeout(() => {
@@ -301,18 +550,31 @@ export class Quests {
 
   update(dt, t) {
     const player = this.game.player;
-    for (const gem of this.gems) {
-      if (gem.found || !gem.group) continue;
-      gem.crystal.position.y = 1.1 + Math.sin(t * 2 + gem.index) * 0.15;
-      gem.crystal.rotation.y = t * 1.5 + gem.index;
-      gem.ring.rotation.z = t * 0.6;
-      gem.ring.scale.setScalar(1 + Math.sin(t * 3 + gem.index) * 0.08);
-      if (player) {
-        _d.copy(gem.position).sub(player.position);
-        const dy = Math.abs(_d.y); _d.y = 0;
-        if (_d.length() < 1.6 && dy < 2.5) this.collectGem(gem);
+    for (const list of [this.gems, this.dayGems]) {
+      for (const gem of list) {
+        if (gem.found || !gem.group) continue;
+        gem.crystal.position.y = 1.1 + Math.sin(t * 2 + gem.index) * 0.15;
+        gem.crystal.rotation.y = t * 1.5 + gem.index;
+        gem.ring.rotation.z = t * 0.6;
+        gem.ring.scale.setScalar(1 + Math.sin(t * 3 + gem.index) * 0.08);
+        if (player) {
+          _d.copy(gem.position).sub(player.position);
+          const dy = Math.abs(_d.y); _d.y = 0;
+          if (_d.length() < 1.6 && dy < 2.5) this.collectGem(gem);
+        }
       }
     }
+    // "Walk N metres" counts the player's own odometer, per day.
+    if (player && typeof player.distanceWalked === 'number') {
+      if (this._walkMark == null) this._walkMark = player.distanceWalked;
+      const delta = player.distanceWalked - this._walkMark;
+      if (delta > 0) {
+        this.state.dayStats.walked += delta; this._walkMark = player.distanceWalked;
+        this._walkAcc = (this._walkAcc || 0) + delta;
+        if (this._walkAcc > 10 && this.dayQuests().some((q) => q.id.endsWith('-walk') && !this.isComplete(q.id))) { this._walkAcc = 0; this.changed(); }
+      }
+    }
+    this.items.update?.(dt, t);
     for (let i = this.fx.length - 1; i >= 0; i--) {
       const fx = this.fx[i];
       fx.age += dt;

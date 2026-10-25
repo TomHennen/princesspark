@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { Track, buildRails, buildPillars, makeSign, addTrackColliders } from './shared/track.js';
+import { Track, buildRails, buildPillars, makeSign, addTrackColliders, addInstanceColliders } from './shared/track.js';
 
 const G = 9.81, EFF = 0.72, VMIN = 4.0, CHAIN = 4.2, CRAWL = 2.6, CAR_GAP = 3.8;
 const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _m = new THREE.Matrix4();
@@ -117,6 +117,7 @@ export class Coaster extends Ride {
     // thin rails / ties / pillars must not yank the ride camera in; only solid things occlude
     rails.traverse((o) => { o.userData.noOcclude = true; }); pillars.userData.noOcclude = true;
     this.group.add(rails, pillars);
+    addInstanceColliders(this, pillars, { minW: 0.6 });   // support legs are solid
     // walkers can't cross the track where it runs at ground level (station + brake run)
     addTrackColliders(this, track, { maxH: 2.2, width: 1.8, step: 7 });
     // lift chain (dark beam between the rails along the lift)
@@ -182,6 +183,21 @@ export class Coaster extends Ride {
     this.addBoxCollider(new THREE.Vector3(1, 0.6, 27.8), new THREE.Vector3(8, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(13, 0.6, 27.8), new THREE.Vector3(4, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(1, 0.6, 29.6), new THREE.Vector3(8, 1.2, 0.3));
+    this.addBoxCollider(new THREE.Vector3(-3.5, 3, 27.5), new THREE.Vector3(0.6, 6, 0.6));   // roof columns
+    this.addBoxCollider(new THREE.Vector3(15.5, 3, 27.5), new THREE.Vector3(0.6, 6, 0.6));
+  }
+
+  /** Remote riders fill the cars ahead of the local one (the local seat is in the last car). */
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) {
+      const n = this.cars.length, s = new THREE.Object3D();
+      const k = i < n - 1 ? n - 2 - i : i % n;            // cars ahead first, then double up
+      s.position.set(i < n - 1 ? 0 : (i % 2 ? -0.5 : 0.5), 0.55, -0.3);
+      this.cars[k].add(s);
+      this._peerSeats[i] = s;
+    }
+    return this._peerSeats[i];
   }
 
   buildDragonHead(M) {

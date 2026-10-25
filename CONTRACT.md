@@ -70,3 +70,29 @@ Owns: sky/fog/lighting, ground, paths, lagoon water, castle, palms, fences, benc
 - Each module exports exactly what the contract says. Don't reach into another module's internals beyond the contract.
 - `npm run build` must pass with zero errors. Test by running `npm run build`.
 - Comments: brief, explain non-obvious intent.
+
+## Round-2 additions (QA tab 2)
+Player states: `player.state` is `'walk' | 'riding' | 'sit' | 'slide'`.
+- `player.sitAt({ id, position: Vector3, facing, attachTo?: Object3D, anim?: 'sit' })` — sit down (benches, swings, loungers). Standing up: X / jump / move input, or `player.standUp()`. Emits `seat:sit` { id } and `seat:stand` { id }. `attachTo`: the avatar follows that Object3D's world transform while seated (swing seat, spinner).
+- `player.slideAlong(curve: THREE.Curve<Vector3>, { id, duration, anim?: 'sit' })` → state `'slide'`, feet follow the world-space curve, camera trails behind; emits `slide:end` { id } when done. Used by the flamingo slide and the playground slide.
+- `player.speedBoost(seconds)` — "sugar rush": run speed without holding boost for N seconds.
+- Step-up: the player can walk up onto any collider or platform whose top is at most **0.6** above their feet (stairs = a run of boxes/platforms with ≤0.6 rises). World builders rely on this rule for every staircase.
+- `player.setHeld(item)` — equip a hand-held item (`HELD_ITEMS` in core/avatar.js); stored in the avatar config as `config.held`, so it persists and syncs over the network. `avatar.squish()` plays the Needoh squish; `avatar.eat()` plays a bite (the item shrinks away; caller clears `held` afterwards).
+
+World additions (src/world):
+- `world.seats`: `[{ id, position: Vector3, facing, attachTo? }]` and the world registers a `kind: 'misc'` interactable (`label: 'Sit'`) for each; `onInteract` calls `player.sitAt(...)`.
+- `world.landmarks.snackStand`, `world.landmarks.souvenirStand` — WORLD position where the shopper stands (in front of the counter) — quests registers the shop interactables there. `world.landmarks.house`, `world.landmarks.playground`, `world.landmarks.lookoutSlide`.
+- `world.poolZones`: `THREE.Box3[]` (world space) — pool decks where running is dangerous (lifeguard shouts). `world.lifeguardSpots`: `[{ position: Vector3, facing }]` where lifeguards stand/sit.
+- `world.setWeather(name)` / `world.weather` — `'sunny' | 'cloudy' | 'rain' | 'storm' | 'sunset' | 'night'`; emits `weather:change` { weather }. Persisted in `settings.weather` by the UI that offers the picker (`applySettings(game, { weather })`); `world` reads `game.settings.weather` at build and applies it.
+- The house (just outside the south entrance) has a bed: its interactable calls `game.quests.trySleep()` (quests decides whether the day can end) and a closet that calls `game.ui.openDressingRoom()`.
+- Playground items emit `play` { id } when used (swing, slide, spinner, seesaw, climb).
+
+Rides (multiplayer):
+- `ride.peerSeat(i)` → `Object3D | null` — a seat for remote rider `i` (0-based) inside THIS client's copy of the ride (same train / an extra tube / the next horse), so remote riders appear in the vehicle as it moves locally. Rides create extra visible vehicles when needed (an extra tube on the lazy river). `null` for drive rides.
+- `ride.makePeerVehicle()` → `Object3D | null` — drive rides only: a fresh bike mesh the net module parents under the remote avatar's group (the remote transmits its own transform).
+
+Quests / days:
+- `quests.day` (1-based) in the save; `quests.trySleep()` → if every quest of the current day is complete: fade, `day++`, new quest list, toast; otherwise a hint of what is left. Emits `day:change` { day }.
+- New events consumed by quests: `snack:eat` { item }, `shop:equip` { item }, `play` { id }, `seat:sit`, `slide:end`, `weather:change`, `lifeguard:warn`.
+- Shops: the snack stand and souvenir stand are `kind: 'misc'` interactables registered by quests (`label: 'Snack Stand'` / `'Souvenir Shop'`) opening `ui.choose` menus; everything is free (no money in the game).
+- Ride camera note: every ancestor of `ride.seat` up to the ride group counts as "the vehicle" and never occludes the camera. If the seat would sit on a big rotating assembly (carousel rotor, Ferris hub), parent the seat to a small level carrier driven in `update()` instead, so the canopy/column still occlude properly.

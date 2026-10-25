@@ -149,9 +149,13 @@ export class WaterSlide extends Ride {
     const sign = makeSign(['FLAMINGO FALLS'], { w: 7.5, h: 1.5, bg: '#ff7bac', fg: '#ffffff', border: '#ffd600', boardColor: 0xe8528d });
     sign.position.set(TX, 11.5, TZ + 2.45); this.group.add(sign);
     const sign2 = makeSign(['SPLASH ZONE'], { w: 3.2, h: 0.8, bg: '#ffffff', fg: '#3aa8e0', border: '#ff7bac', boardColor: 0xffd600 });
-    sign2.position.set(12.4, 1.6, 23); sign2.rotation.y = -Math.PI / 2; this.group.add(sign2);
-    // colliders: tower base, pool coping (exit side left open at the steps), queue rails
-    this.addBoxCollider(new THREE.Vector3(TX, 8, TZ), new THREE.Vector3(5.4, 16, 5.4));
+    sign2.position.set(12.7, 1.6, 23); sign2.rotation.y = -Math.PI / 2; this.group.add(sign2);
+    const signPost = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.3, 0.12), new THREE.MeshStandardMaterial({ color: WHITE, roughness: 0.6 }));
+    signPost.position.set(12.7, 0.65, 23); signPost.userData.noOcclude = true; this.group.add(signPost);
+    // colliders: tower (incl. the spiral stair), swoop posts, pool coping (exit side left open at the steps), queue rails
+    this.addBoxCollider(new THREE.Vector3(TX, 8, TZ), new THREE.Vector3(7.2, 16, 7.2));
+    for (const s of [this.sSwoop + 2, this.sSwoop + 8, this.sSwoop + 14, this.sSwoop + 20, this.sDrop - 2]) { tr.trackAt(s, _p); this.addBoxCollider(new THREE.Vector3(_p.x, _p.y / 2, _p.z), new THREE.Vector3(0.6, _p.y, 0.6)); }
+    this.addBoxCollider(new THREE.Vector3(12.7, 1, 23), new THREE.Vector3(0.4, 2, 3.4));
     this.addBoxCollider(new THREE.Vector3(6, 0.5, 17.65), new THREE.Vector3(13.4, 1, 0.7));
     this.addBoxCollider(new THREE.Vector3(-0.35, 0.5, 23), new THREE.Vector3(0.7, 1, 11.4));
     this.addBoxCollider(new THREE.Vector3(12.35, 0.5, 23), new THREE.Vector3(0.7, 1, 11.4));
@@ -159,20 +163,24 @@ export class WaterSlide extends Ride {
     this.addBoxCollider(new THREE.Vector3(10.5, 0.5, 28.35), new THREE.Vector3(4.4, 1, 0.7));
   }
 
+  makeRing(a, b) {
+    const paint = (g, c) => { const col = new THREE.Color(c), n = g.attributes.position.count, arr = new Float32Array(n * 3); for (let i = 0; i < n; i++) { arr[i * 3] = col.r; arr[i * 3 + 1] = col.g; arr[i * 3 + 2] = col.b; } g.setAttribute('color', new THREE.BufferAttribute(arr, 3)); return g; };
+    const geo = mergeGeometries([
+      paint(new THREE.TorusGeometry(0.8, 0.3, 8, 18).rotateX(Math.PI / 2).translate(0, 0.3, 0), a),
+      paint(new THREE.CylinderGeometry(0.62, 0.62, 0.08, 18).translate(0, 0.12, 0), b),
+      paint(new THREE.BoxGeometry(0.5, 0.08, 0.3).translate(0.75, 0.62, 0.5), b), paint(new THREE.BoxGeometry(0.5, 0.08, 0.3).translate(-0.75, 0.62, 0.5), b),
+    ], false);
+    const ring = new THREE.Group();
+    const mesh = new THREE.Mesh(geo, this.M.ring); mesh.castShadow = true; mesh.userData.noOcclude = true; ring.add(mesh);
+    this.group.add(ring);
+    return ring;
+  }
+
   buildRings(M) {
     this.rings = [];
-    const paint = (g, c) => { const col = new THREE.Color(c), n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) { a[i * 3] = col.r; a[i * 3 + 1] = col.g; a[i * 3 + 2] = col.b; } g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; };
     const cols = [[YELLOW, PINK], [BLUE, WHITE], [PINK, YELLOW]];
     for (let k = 0; k < RINGS; k++) {
-      const [a, b] = cols[k];
-      const geo = mergeGeometries([
-        paint(new THREE.TorusGeometry(0.8, 0.3, 8, 18).rotateX(Math.PI / 2).translate(0, 0.3, 0), a),
-        paint(new THREE.CylinderGeometry(0.62, 0.62, 0.08, 18).translate(0, 0.12, 0), b),
-        paint(new THREE.BoxGeometry(0.5, 0.08, 0.3).translate(0.75, 0.62, 0.5), b), paint(new THREE.BoxGeometry(0.5, 0.08, 0.3).translate(-0.75, 0.62, 0.5), b),
-      ], false);
-      const ring = new THREE.Group();
-      const mesh = new THREE.Mesh(geo, M.ring); mesh.castShadow = true; ring.add(mesh);
-      this.group.add(ring);
+      const ring = this.makeRing(...cols[k]);
       this.rings.push({ group: ring, s: (k * this.L) / RINGS, v: HELIX, wait: 0 });
     }
     this.rider = this.rings[0];
@@ -191,8 +199,27 @@ export class WaterSlide extends Ride {
     this.group.add(this.splash);
   }
 
+  /**
+   * Remote rider i gets an extra ring that sets off (i+1)*1.5 s after the local one and follows the same
+   * flume; while it waits it sits on the tower deck beside the launch tub, then it cycles like the empties.
+   */
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) {
+      const cols = [[WHITE, BLUE], [YELLOW, BLUE], [PINK, WHITE], [BLUE, YELLOW]];
+      const ring = this.makeRing(...cols[i % cols.length]);
+      const r = { group: ring, s: 0, v: 0, wait: (i + 1) * 1.5, peer: true, delay: (i + 1) * 1.5, deck: new THREE.Vector3(TX + 2.6 - 1.5 * (i + 1), TOP + 0.02, TZ - 0.2) };
+      this.rings.push(r);
+      const seat = new THREE.Object3D(); seat.position.set(0, 0.3, 0); ring.add(seat);
+      this._peerSeats[i] = seat;
+      this.placeRings();
+    }
+    return this._peerSeats[i];
+  }
+
   placeRings() {
     for (const r of this.rings) {
+      if (r.peer && r.wait > 0) { r.group.position.copy(r.deck); r.group.quaternion.identity(); r.group.rotation.y = Math.PI / 2; continue; }
       const s = Math.min(this.L, r.s);
       this.track.trackAt(s, r.group.position, r.group.quaternion);
       if (s >= this.sPool) r.group.position.y += Math.sin(this.game.time * 2.2 + r.s) * 0.05; // bob in the pool
@@ -201,7 +228,10 @@ export class WaterSlide extends Ride {
 
   onBoard() {
     // fresh run: the rider's ring snaps to the tower top; the others are spread out ahead of it
-    this.rings.forEach((r, k) => { r.s = k === 0 ? 0 : (k * this.L) / RINGS; r.v = k === 0 ? 0 : HELIX; r.wait = 0; });
+    this.rings.forEach((r, k) => {
+      if (r.peer) { r.s = 0; r.v = 0; r.wait = r.delay; return; }   // peer rings set off shortly after the rider
+      r.s = k === 0 ? 0 : (k * this.L) / RINGS; r.v = k === 0 ? 0 : HELIX; r.wait = 0;
+    });
     this.done = 0; this.whooshed = false;
     this.placeRings();
   }
@@ -217,7 +247,7 @@ export class WaterSlide extends Ride {
       r.s = Math.min(this.L, r.s + r.v * dt);
       if (before < this.sSplash && r.s >= this.sSplash) { this.splashT = 0; this.splash.count = SPLASH_N; if (r === this.rider && this.riding) this.game.audio?.play('whoosh'); }
       if (r === this.rider && this.riding) { if (!this.whooshed && before < this.sDrop && r.s >= this.sDrop) { this.whooshed = true; this.game.audio?.play('whoosh'); } if (r.s >= this.L) this.done += dt; }
-      else if (r.s >= this.L) r.wait = 3; // empty ring floats a moment, then "walks back up" to the top
+      else if (r.s >= this.L) r.wait = r.peer ? 3 + r.delay : 3; // empty ring floats a moment, then "walks back up" to the top
     }
     this.placeRings();
     this.waterTex.offset.y -= dt * 0.9;

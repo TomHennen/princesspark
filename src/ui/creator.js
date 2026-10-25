@@ -1,11 +1,16 @@
 // "Dressing Room": full-screen avatar creator with a live Three.js preview. Resolves with the final config.
 import * as THREE from 'three';
-import { buildAvatar, DEFAULT_AVATAR, HAIR_STYLES, OUTFITS, ACCESSORIES, SKIN_TONES, HAIR_COLORS, PALETTE } from '../core/avatar.js';
+import { buildAvatar, DEFAULT_AVATAR, HAIR_STYLES, OUTFITS, ACCESSORIES, HELD_ITEMS, SKIN_TONES, HAIR_COLORS, PALETTE } from '../core/avatar.js';
 import { applySettings, sanitizeName as sanitizeSettingName } from '../core/settings.js';
 
 const BASE_ACCESSORIES = ['none', 'tiara', 'bunnyEars'];
 const HAIR_LABELS = { short: 'Short', long: 'Long', ponytail: 'Ponytail', bun: 'Bun', curly: 'Curly', bob: 'Bob', none: 'None' };
-const OUTFIT_LABELS = { casual: ['👕', 'Casual'], dress: ['👗', 'Dress'], gown: ['👸', 'Gown'], armor: ['🛡️', 'Armor'], hoodie: ['🧥', 'Hoodie'] };
+const OUTFIT_LABELS = { casual: ['👕', 'Casual'], dress: ['👗', 'Dress'], gown: ['👸', 'Gown'], armor: ['🛡️', 'Armor'], hoodie: ['🧥', 'Hoodie'], swimsuit: ['🩱', 'Swimsuit'] };
+// hand-held items come from the park shops (no picker here); shown in the preview and listed read-only
+const HELD_LABELS = {
+  none: ['', 'Nothing'], needoh: ['🟢', 'Needoh'], balloon: ['🎈', 'Balloon'], wand: ['🪄', 'Wand'], plushie: ['🦩', 'Flamingo plushie'],
+  iceCream: ['🍦', 'Ice cream'], cottonCandy: ['🍭', 'Cotton candy'], pretzel: ['🥨', 'Pretzel'], lemonade: ['🍋', 'Lemonade'],
+};
 const ACC_LABELS = {
   none: ['🚫', 'None'], crown: ['👑', 'Crown'], tiara: ['💎', 'Tiara'], wings: ['🦋', 'Wings'], cape: ['🧣', 'Cape'],
   wizardHat: ['🧙', 'Wizard Hat'], bunnyEars: ['🐰', 'Bunny Ears'], sunglasses: ['🕶️', 'Shades'], halo: ['😇', 'Halo'], catEars: ['🐱', 'Cat Ears'],
@@ -42,6 +47,7 @@ export function showAvatarCreator(game, config, { inGame = false } = {}) {
   const firstRun = !inGame && !game?.settings?.setupDone;
   const unlocked = getUnlockedAccessories(game);
   if (!unlocked.has(cfg.accessory)) cfg.accessory = 'none';
+  if (!HELD_ITEMS.includes(cfg.held)) cfg.held = 'none';
   const click = () => game?.audio?.play('click');
   const root = document.getElementById('ui-root');
 
@@ -148,6 +154,11 @@ export function showAvatarCreator(game, config, { inGame = false } = {}) {
   refreshers.push(() => { for (const b of grid.children) b.classList.toggle('sel', b.dataset.v === cfg.accessory); });
   sA.appendChild(grid); pAcc.appendChild(sA);
   const sAc = section('Accessory color'); sAc.appendChild(swatches('accessoryColor', PALETTE)); pAcc.appendChild(sAc);
+  // what's in your hand (bought at the snack / souvenir stands; the preview shows it)
+  const sHeld = section('In your hand');
+  const heldTip = el('p', 'hk-tip');
+  refreshers.push(() => { const [ico, txt] = HELD_LABELS[cfg.held] || ['', cfg.held]; heldTip.innerHTML = cfg.held === 'none' ? 'Nothing yet — visit the snack stand or souvenir shop in the park!' : `${ico} ${txt} · from the park shops`; });
+  sHeld.appendChild(heldTip); pAcc.appendChild(sHeld);
 
   // Kingdom: park name + the two princess hosts (name, favourite colour, catchphrase)
   const pKingdom = el('div', 'hk-page');

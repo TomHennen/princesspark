@@ -59,19 +59,31 @@ Nothing is hardcoded: the princesses' gowns, dialogue and quest text all follow 
 | Camera mode | V (follow / free) | |
 | Dialogue choices | 1-4, arrows, Enter | tap |
 | Dressing room | C | Avatar button |
+| Weather | K | ☀️ button |
+| Sit / stand up | E near a bench, X to stand | ★ / Exit buttons |
+| Use what you're holding | E (eat, squish, wave) | ✦ button |
 | Mute | M | speaker button |
+
+## Things to do
+
+- **Rides** — coaster, log flume, carousel, Ferris wheel, teacups (pick a speed, including one that throws you out), Grid Riders light cycles, Thunder Bikes, and the Splash Cove water park (slide + lazy river, swimsuits on automatically).
+- **Quests and days** — each day has a quest list; finish it and sleep in the bed in your cottage (just outside the south gate) to start the next day with new quests. Day 1 unlocks accessories; later days are sillier (get thrown out of the teacups, ride the coaster at night, make the lifeguard yell...).
+- **Shops** — the Snack Stand and Souvenir Shop by the plaza give out free snacks and toys (a Needoh to squish, a balloon, a glow wand, a plushie). Eating a snack gives a sugar rush.
+- **Playground, flamingo slide, benches** — swings, a slide, a spinner, a seesaw and a climbing frame next to the carousel; a flamingo-shaped slide down from the Flamingo Lookout; every bench and lounger can be sat on.
+- **Weather** — sunny, cloudy, rain, storm (with lightning), sunset and night, from the ☀️ button or `K`.
+- **Lifeguards** — run near a pool in Splash Cove and you'll hear about it.
 
 ## Project layout
 
 - `src/main.js` boots everything and runs the game loop.
 - `src/core/` avatar builder, player controller, input, event bus, kingdom settings.
-- `src/world/` the park: sky, castle, lagoon, paths, palms, gem spots.
+- `src/world/` the park: sky and weather, castle, lagoon, paths, palms, Splash Cove, the playground (`playground.js`), the cottage (`house.js`), gem spots.
 - `src/rides/` one file per ride, all extending `Ride.js`. `index.js` holds the park layout table.
 - `src/npcs/` the two princess hosts and ambient characters plus dialogue.
-- `src/quests/` quests, hidden gems, unlocks, save data.
+- `src/quests/` quests per day, hidden gems, unlocks, shops and held items (`items.js`), save data.
 - `src/ui/` HUD, dialogue, avatar creator, touch controls, styles.
 - `src/audio/` synthesized sound effects and music.
-- `tools/screenshot.mjs` headless Chromium harness used to verify the game visually.
+- `tools/screenshot.mjs` headless Chromium harness used to verify the game visually; `tools/playtest.js` and `tools/playtest-days.js` are scripted playthroughs run through it.
 - `src/net/` play-together networking: `net.js` (Trystero rooms + remote avatars), `lobby.js` (room-code card), `code.js`; `tools/net-test.mjs` tests it end to end.
 
 See `CONTRACT.md` for the interfaces each module follows.

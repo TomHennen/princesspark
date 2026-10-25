@@ -26,7 +26,12 @@ export class Ride {
     this.duration = 30;                     // seconds; passive rides auto-complete after this
     this.colliders = [];                    // THREE.Box3 (world space) the player can't walk through
     this.tagline = '';                      // short flavor text shown in the ride prompt
+    this.remoteRiders = new Set();          // peerIds of remote players currently aboard this ride (net:board / net:unboard)
+    game.events?.on?.('net:board', (e) => { if (e?.ride === this.id && e.peerId != null) this.remoteRiders.add(e.peerId); });
+    game.events?.on?.('net:unboard', (e) => { if (e?.ride === this.id) this.remoteRiders.delete(e?.peerId); });
   }
+  /** True while anyone (local or remote) is aboard — rides that only animate for riders should use this. */
+  get occupied() { return this.riding || this.remoteRiders.size > 0; }
   /** Populate this.group, set this.station (world space), add colliders. Called once. */
   build() {}
   /** Animate the ride every frame, whether or not someone is riding. */
@@ -37,6 +42,16 @@ export class Ride {
   isComplete() { return this.kind === 'passive' && this.rideTime >= this.duration; }
   /** World-space position the player is placed at after the ride. Defaults to the station. */
   get exitPosition() { return this.station; }
+
+  /** Multiplayer: seat for remote rider i inside this client's ride (see CONTRACT.md). Default: beside the local seat. */
+  peerSeat(i) {
+    if (this.kind === 'drive') return null;
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) { const s = new THREE.Object3D(); s.position.set((i % 2 ? -1 : 1) * 0.9 * Math.ceil((i + 1) / 2), 0, 0); this.seat.add(s); this._peerSeats[i] = s; }
+    return this._peerSeats[i];
+  }
+  /** Multiplayer, drive rides: a fresh vehicle mesh for a remote rider (parented by net under the remote avatar). */
+  makePeerVehicle() { return null; }
 
   board(player) { this.riding = true; this.rideTime = 0; this.onBoard?.(player); }
   unboard(player) { this.riding = false; this.onUnboard?.(player); }

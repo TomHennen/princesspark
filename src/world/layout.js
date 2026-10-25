@@ -62,6 +62,7 @@ export const PATHS = [
   { id: 'bikeS',     a: [20, 88],     b: [20, 102.5],  w: 6 },
   { id: 'bikeE',     a: [20, 102.5],  b: [103, 102.5], w: 5, lamps: true },
   { id: 'bikeIn',    a: [103, 102.5], b: [103, 96.5],  w: 5 },
+  { id: 'playground',a: [20, 88],     b: [28, 88],     w: 5 },   // short spur east off the ring to the playground gate
   // --- Splash Cove water park: from the flume service path east to the gate at (122, 8), then the promenade ---
   { id: 'splashW',    a: [85.5, 2.5],  b: [108, 2.5],   w: 6, lamps: true, bunting: true },
   { id: 'splashBend', a: [108, 2.5],   b: [114.6, 8],   w: 6 },
@@ -74,6 +75,14 @@ export const PATHS = [
 ];
 
 export const PLAZA_R = 20;
+// Hand-built areas the random dressing (palms, bushes, lamps) must stay out of. Rides use PLOTS; these are world-owned.
+export const PLAYGROUND = { x: 37, z: 87, w: 22, d: 22 };     // x 26..48, z 76..98, east of the ring road
+export const HOUSE = { x: 16, z: 122, w: 30, d: 18 };          // cottage garden outside the south gate (door faces east)
+export const RESERVED = [PLAYGROUND, HOUSE];
+export function inReserved(x, z, margin = 0) {
+  for (const r of RESERVED) if (Math.abs(x - r.x) < r.w / 2 + margin && Math.abs(z - r.z) < r.d / 2 + margin) return true;
+  return false;
+}
 export const LAGOON = { x: 0, z: -48, rx: 22, rz: 12 };
 export const CASTLE = { x: 0, z: -91, halfW: 22, halfD: 15 };           // wall centre lines
 export const MOAT = { inner: [24.5, 18.5], outer: [30.5, 24.5], r: 4 };  // rounded-rect half sizes around CASTLE
@@ -157,7 +166,7 @@ export function onPath(x, z, margin = 0) {
 export function isClear(x, z, margin = 2) {
   if (x > 118) return false;   // the water park wing is dressed by hand (waterpark.js)
   if (Math.abs(x) > 130 - margin || z > southWallZ(x) - 3 - margin || z < -130 + margin) return false;
-  if (inPlot(x, z, margin) || onPath(x, z, margin) || inWater(x, z, margin + 1)) return false;
+  if (inPlot(x, z, margin) || inReserved(x, z, margin) || onPath(x, z, margin) || inWater(x, z, margin + 1)) return false;
   if (Math.abs(x - CASTLE.x) < CASTLE.halfW + 4 + margin && Math.abs(z - CASTLE.z) < CASTLE.halfD + 4 + margin) return false;
   if (Math.hypot(x - GAZEBO.x, z - GAZEBO.z) < GAZEBO.r + 2 + margin) return false;
   if (Math.hypot(x - FOUNTAIN.x, z - FOUNTAIN.z) < FOUNTAIN.r + 2 + margin) return false;

@@ -209,6 +209,43 @@ export class GameAudio {
       this.tone({ t: t + 0.13, freq: 1568, type: 'sine', dur: 0.4, vol: 0.08 });
     },
     boost(t) { this.tone({ t, freq: 180, to: 900, type: 'sawtooth', dur: 0.5, vol: 0.12, filter: 1800, q: 3, a: 0.02 }); },
+    // Needoh: a soft, wet squelch — a downward wobble with low-passed noise under it
+    squish(t) {
+      this.tone({ t, freq: 320, to: 110, type: 'sine', dur: 0.22, vol: 0.2, a: 0.01 });
+      this.tone({ t: t + 0.05, freq: 180, to: 260, type: 'triangle', dur: 0.18, vol: 0.08, a: 0.02, filter: 900 });
+      this.noise({ t, dur: 0.16, vol: 0.08, type: 'lowpass', f0: 1400, f1: 300, a: 0.01 });
+    },
+    // Lifeguard whistle: a sharp two-tone "fweet-FWEET" with a bit of breath noise
+    whistle(t) {
+      this.tone({ t, freq: 2300, to: 2500, type: 'square', dur: 0.16, vol: 0.12, a: 0.004, filter: 6000 });
+      this.tone({ t, freq: 2340, type: 'sine', dur: 0.16, vol: 0.12, a: 0.004 });
+      this.tone({ t: t + 0.2, freq: 2700, to: 3000, type: 'square', dur: 0.3, vol: 0.13, a: 0.004, filter: 7000 });
+      this.tone({ t: t + 0.2, freq: 2740, type: 'sine', dur: 0.3, vol: 0.13, a: 0.004 });
+      this.noise({ t, dur: 0.5, vol: 0.04, type: 'bandpass', f0: 2600, q: 4, a: 0.01 });
+    },
+    // Thunder (storm weather): a low rumble of filtered noise that swells, then rolls away
+    thunder(t) {
+      this.noise({ t, dur: 1.6, vol: 0.22, type: 'lowpass', f0: 90, f1: 260, a: 0.25 });
+      this.noise({ t: t + 0.35, dur: 2.2, vol: 0.14, type: 'lowpass', f0: 160, f1: 60, a: 0.4 });
+      this.tone({ t, freq: 48, to: 32, type: 'sine', dur: 1.8, vol: 0.12, a: 0.2 });
+    },
+    // Glow wand: a rising glitter of tiny sine pings
+    sparkle(t) {
+      [96, 100, 103, 108, 112].forEach((n, i) => this.tone({ t: t + i * 0.05, freq: midi(n), type: 'sine', dur: 0.22, vol: 0.09 }));
+      this.noise({ t, dur: 0.35, vol: 0.04, type: 'highpass', f0: 6000, a: 0.01 });
+    },
+    // Snack bite: a crunchy noise click plus a happy "nom" blip
+    eat(t) {
+      this.noise({ t, dur: 0.09, vol: 0.18, type: 'lowpass', f0: 2500, f1: 600, a: 0.003 });
+      this.tone({ t: t + 0.06, freq: 440, to: 660, type: 'triangle', dur: 0.14, vol: 0.12 });
+      this.noise({ t: t + 0.16, dur: 0.07, vol: 0.12, type: 'lowpass', f0: 2000, f1: 500, a: 0.003 });
+    },
+    // Balloon bop: a rubbery boing
+    boing(t) { this.tone({ t, freq: 220, to: 520, type: 'sine', dur: 0.2, vol: 0.14, a: 0.005 }); this.tone({ t: t + 0.12, freq: 520, to: 300, type: 'sine', dur: 0.25, vol: 0.1 }); },
+    // Bedtime: a slow, soft lullaby chime
+    sleep(t) {
+      [76, 72, 69, 64].forEach((n, i) => { this.tone({ t: t + i * 0.32, freq: midi(n), type: 'sine', dur: 0.9, vol: 0.12 }); this.tone({ t: t + i * 0.32, freq: midi(n - 12), type: 'triangle', dur: 0.9, vol: 0.05, filter: 1200 }); });
+    },
   };
 
   // ---------- music ----------

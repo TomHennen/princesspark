@@ -91,7 +91,10 @@ function wavePool({ world, B, sign }) {
   for (const [x, z] of [[W.x + hx, W.z - 6], [W.x + hx, W.z + 8]]) {
     B.beam(0xd0d6dc, x - 0.3, -0.5, z - 0.3, x + 0.8, 1.0, z - 0.3, 0.05); B.beam(0xd0d6dc, x - 0.3, -0.5, z + 0.3, x + 0.8, 1.0, z + 0.3, 0.05);
     for (let k = 0; k < 4; k++) B.box(0xd0d6dc, 0.08, 0.08, 0.7, x - 0.3 + k * 0.3, -0.4 + k * 0.4, z);
+    world.addCollider(x + 0.25, 0.4, z, 1.2, 1.4, 0.8);
   }
+  // pool decks where running gets a lifeguard's whistle (NPC module reads these)
+  world.poolZones.push(new THREE.Box3(new THREE.Vector3(W.x - hx - 3.6, -1.5, W.z - hz - 3.6), new THREE.Vector3(W.x + hx + 3.6, 4, W.z + hz + 3.6)));
   // depth markers
   for (const z of [W.z + hz + 0.6, W.z - hz - 0.6]) B.box(C.yellow, 1.4, 0.06, 0.5, W.x - hx + 1.6, 0.04, z);
   // wave house: striped machine room at the deep (north) end
@@ -115,6 +118,9 @@ function wavePool({ world, B, sign }) {
 // ---------------- kiddie splash pad: mushroom fountain + ring of jets (instanced droplets) ----------------
 function splashPad({ world, B }) {
   const X = 138, Z = -8, R = 3.6;
+  world.poolZones.push(new THREE.Box3(new THREE.Vector3(X - 6.5, -1, Z - 6.5), new THREE.Vector3(X + 6.5, 4, Z + 6.5)));
+  world.poolZones.push(new THREE.Box3(new THREE.Vector3(130, -1, 16), new THREE.Vector3(192, 4, 77)));   // lazy river banks (ride plot minus the promenade)
+  world.addCollider(X, 1.0, Z, 0.5, 2.0, 0.5);   // mushroom stem
   B.cyl(0x1d6fa8, 0.14, 0.18, 2.0, X, 0, Z, 8);
   B.cyl(C.hotpink, 1.3, 1.2, 0.18, X, 2.0, Z, 16); B.cone(C.hotpink, 1.1, 0.5, X, 2.18, Z, 16); B.sphere(C.yellow, 0.14, X, 2.75, Z);
   for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2; B.sphere(C.white, 0.08, X + Math.cos(a) * 1.25, 2.08, Z + Math.sin(a) * 1.25, 5, 4); }
@@ -187,21 +193,26 @@ function lifeguards({ world, B, sign }) {
     B.add(new THREE.TorusGeometry(0.38, 0.11, 6, 12), 0xe53935, -0.85, 2.4, 0, 0, Math.PI / 2, 0);
     B.end();
     world.addCollider(x, 1.6, z, 1.6, 3.2, 1.6);
+    // the lifeguard's perch: on the chair deck, looking the way the chair faces (local +z)
+    world.lifeguardSpots.push({ position: new THREE.Vector3(x, 3.14, z), facing: ry, chair: true });
     if (label) sign('LIFEGUARD', x - Math.sin(ry) * 0.72, 3.3, z - Math.cos(ry) * 0.72, ry + Math.PI, { w: 1.3, h: 0.36, bg: '#e53935', fg: '#ffffff', stroke: '#8e0000', border: '#ffffff' });
   };
   chair(WAVE_POOL.x + WAVE_POOL.hx + 2.3, WAVE_POOL.z - 2, -Math.PI / 2, true);   // faces west over the wave pool
   chair(146.5, 44, Math.PI / 2, false);                                            // watches the lazy river from the lawn
+  world.lifeguardSpots.push({ position: new THREE.Vector3(144.6, 0, -8), facing: -Math.PI / 2, chair: false });   // standing at the splash pad rim
 }
 
 // ---------------- loungers, umbrellas, towel stands ----------------
 function seating({ world, B }) {
   const W = WAVE_POOL;
+  let n = 0;
   const lounger = (x, z, ry, color) => {
     B.begin(x, 0, z, ry);
     B.box(color, 0.75, 0.12, 1.8, 0, 0.3, 0); B.box(color, 0.75, 0.7, 0.1, 0, 0.3, -0.85, 0, -0.55);
     B.box(C.white, 0.8, 0.05, 1.9, 0, 0.26, 0);
     for (const [dx, dz] of [[-0.3, -0.8], [0.3, -0.8], [-0.3, 0.8], [0.3, 0.8]]) B.box(C.white, 0.08, 0.3, 0.08, dx, 0, dz);
     B.end();
+    world.addSeat({ id: `lounger${n++}`, position: new THREE.Vector3(x + Math.sin(ry) * 0.3, 0, z + Math.cos(ry) * 0.3), facing: ry, seatHeight: 0.42, anim: 'sit' }, { label: 'Lie down', sub: 'sun lounger' });
   };
   const umbrella = (x, z, top, rim) => {
     B.cyl(C.white, 0.05, 0.05, 2.6, x, 0, z, 6); B.cone(top, 1.7, 0.75, x, 2.3, z, 8); B.cone(rim, 1.8, 0.3, x, 2.26, z, 8); B.sphere(C.yellow, 0.1, x, 3.1, z);

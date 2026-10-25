@@ -4,6 +4,7 @@
 // bike (particle burst + respawn at the pad). Goal: collect 10 glowing bits.
 import * as THREE from 'three';
 import { Ride } from './Ride.js';
+import { makeSign } from './shared/track.js';
 import { coloredMesh, mergeParts, canvasTexture, ParticleBurst, wrapAngle, approach, segDist2 } from './shared/vehicle.js';
 
 const HALF = 25;           // arena interior half-size (inner wall faces at ±HALF)
@@ -16,6 +17,8 @@ const BASE_SPEED = 11, THROTTLE_SPEED = 17, BOOST_SPEED = 23;
 const BOOST_TIME = 1.2, BOOST_CD = 4.5;
 const YELLOW = 0xffe033, CYAN = 0x19e6ff, MAGENTA = 0xff3df0;
 const HIT_R = 0.42;
+const PEER_COLORS = [0xff8c1a, 0x7bff3a, 0xffffff, 0xb44cff, 0xff4d6d, 0x19e6ff];
+let peerColorIdx = 0;
 
 const _v = new THREE.Vector3(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(1, 1, 1), _e = new THREE.Euler();
 
@@ -167,6 +170,8 @@ export class LightCycle extends Ride {
     const postGeo = new THREE.BoxGeometry(0.5, 4.2, 0.5);
     for (const x of [-3.2, 3.2]) { const p = new THREE.Mesh(postGeo, cyanGlow); p.position.set(x, 2.1, HALF + 0.5); p.userData.noOcclude = true; g.add(p); }
     const gateTop = new THREE.Mesh(new THREE.BoxGeometry(7, 0.35, 0.6), magGlow); gateTop.position.set(0, 4.2, HALF + 0.5); gateTop.userData.noOcclude = true; g.add(gateTop);
+    const sign = makeSign(this.name.toUpperCase(), { w: 7, h: 1.4, bg: '#04060c', fg: '#19e6ff', border: '#ff3df0', boardColor: 0x141826 });
+    sign.position.set(0, 5.45, HALF + 0.5); sign.traverse((o) => { o.userData.noOcclude = true; }); g.add(sign);
 
     // --- corner towers + roof ---
     const towers = new THREE.InstancedMesh(new THREE.BoxGeometry(2.6, 14, 2.6), wallMat, 4);
@@ -279,6 +284,16 @@ export class LightCycle extends Ride {
     this.hudText = `BITS 0/${BITS_TARGET} · SPEED 0`;
   }
   onUnboard() { this.parkPlayer(); }
+  /** A light cycle for a remote rider (fresh neon colour each call); origin = rider's feet, +Z forward. */
+  makePeerVehicle() {
+    const wrap = new THREE.Group();
+    const c = buildCycle(PEER_COLORS[peerColorIdx++ % PEER_COLORS.length]);
+    c.group.position.set(0, -0.64, 0.25);   // undo the seat offset so the bike sits under the avatar
+    wrap.add(c.group);
+    wrap.userData.wheels = c.wheels; wrap.userData.glowMat = c.glowMat;
+    wrap.userData.dispose = () => { c.group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose?.(); } }); };
+    return wrap;
+  }
   isComplete() { return this.riding && this.score >= BITS_TARGET; }
 
   handleInput(input, dt) {

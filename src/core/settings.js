@@ -1,10 +1,12 @@
 // Kingdom settings: the park name and the two princess hosts are chosen by the player, never hardcoded.
 // Nothing in the codebase should contain a real person's name or age.
 export const SETTINGS_KEY = 'pk:settings';
+export const WEATHERS = ['sunny', 'cloudy', 'rain', 'storm', 'sunset', 'night'];
 
 export const DEFAULT_SETTINGS = {
   parkName: 'Sunshine Kingdom',
   setupDone: false,
+  weather: 'sunny',           // 'sunny' | 'cloudy' | 'rain' | 'storm' | 'sunset' | 'night'
   princesses: [
     // p1: the warm, clever big-sister type. p2: the bubbly hype type. Personalities are archetypes, not people.
     { id: 'p1', name: 'Juniper', color: '#0b5d3b', catchphrase: '' },
@@ -29,6 +31,7 @@ export function saveSettings(s) {
 function normalize(s) {
   const out = { ...DEFAULT_SETTINGS, ...(s || {}) };
   out.parkName = sanitizeName(out.parkName, 24) || DEFAULT_SETTINGS.parkName;
+  out.weather = WEATHERS.includes(out.weather) ? out.weather : DEFAULT_SETTINGS.weather;
   out.princesses = DEFAULT_SETTINGS.princesses.map((d, i) => {
     const p = { ...d, ...((s && s.princesses && s.princesses[i]) || {}) };
     p.id = d.id;

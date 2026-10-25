@@ -2,8 +2,19 @@
 import { saveAvatarConfig } from '../core/avatar.js';
 import { showAvatarCreator } from './creator.js';
 import { mountTouchControls } from './touch.js';
+import { applySettings } from '../core/settings.js';
 
 const GEM_TOTAL = 14;
+// Weather picker entries (ids match core/settings WEATHERS and world.setWeather).
+const WEATHER_OPTIONS = [
+  { value: 'sunny', label: '☀️ Sunny', sub: 'classic park day' },
+  { value: 'cloudy', label: '⛅ Cloudy', sub: 'soft and grey' },
+  { value: 'rain', label: '🌧️ Rain', sub: 'puddles!' },
+  { value: 'storm', label: '⛈️ Storm', sub: 'thunder & lightning' },
+  { value: 'sunset', label: '🌅 Sunset', sub: 'golden hour' },
+  { value: 'night', label: '🌙 Night', sub: 'park lights on' },
+];
+const WEATHER_ICON = Object.fromEntries(WEATHER_OPTIONS.map((w) => [w.value, w.label.split(' ')[0]]));
 const CONFETTI_COLORS = ['#f9d71c', '#ff6fb5', '#5bb0ff', '#2ecc71', '#ff8c42', '#9b59b6', '#ffffff'];
 const ACC_NAMES = { crown: 'Crown', tiara: 'Tiara', wings: 'Fairy Wings', cape: 'Cape', wizardHat: 'Wizard Hat', bunnyEars: 'Bunny Ears', sunglasses: 'Sunglasses', halo: 'Halo', catEars: 'Cat Ears', none: 'Nothing' };
 
@@ -51,8 +62,8 @@ function buildChoiceList(game, options, onPick, { touch = false } = {}) {
     onPick(o.value !== undefined ? o.value : sel, sel);
   };
   highlight(0);
-  // stagger the buttons in
-  requestAnimationFrame(() => btns.forEach((b, i) => setTimeout(() => b.classList.add('in'), 40 + i * 60)));
+  // stagger the buttons in (timers, not rAF, so a slow frame can't leave the list invisible)
+  btns.forEach((b, i) => setTimeout(() => b.classList.add('in'), 40 + i * 60));
   return {
     el: list,
     handleKey(e) {
@@ -102,18 +113,26 @@ export class UI {
       </div>
       <div class="hk-hud-right">
         <button class="hk-btn hk-avatar-btn" title="Change your look (C)"><span class="hk-ico">🧚</span><span class="hk-txt">Avatar</span></button>
+        <button class="hk-btn round hk-weather-btn" title="Pick the weather (K)">☀️</button>
         <button class="hk-btn round hk-mute-btn" title="Sound on/off (M)">🔊</button>
         <button class="hk-btn round hk-help-btn" title="Help (H)">?</button>
-      </div>`;
+      </div>
+      <button class="hk-btn yellow hk-item-btn" title="Use what you're holding (E)"><span class="hk-item-ico">✦</span><span class="hk-item-txt">Use</span></button>`;
     r.appendChild(this.hud);
     this.nameEl = this.hud.querySelector('.hk-name');
     this.gemsEl = this.hud.querySelector('.hk-gems');
     this.objectiveEl = this.hud.querySelector('.hk-objective');
     this.objectiveText = this.hud.querySelector('.hk-objective-text');
     this.muteBtn = this.hud.querySelector('.hk-mute-btn');
+    this.weatherBtn = this.hud.querySelector('.hk-weather-btn');
+    this.itemBtn = this.hud.querySelector('.hk-item-btn');
     this.hud.querySelector('.hk-avatar-btn').addEventListener('click', () => this.openCreator());
+    this.weatherBtn.addEventListener('click', () => this.openWeather());
     this.muteBtn.addEventListener('click', () => this.toggleMute());
     this.hud.querySelector('.hk-help-btn').addEventListener('click', () => this.toggleHelp());
+    // ✦ item button: the touch-friendly way to eat / squish / wave what you're holding
+    this.itemBtn.addEventListener('pointerdown', (e) => e.preventDefault());
+    this.itemBtn.addEventListener('click', (e) => { e.preventDefault(); this.game.items?.use?.() || this.game.quests?.items?.use?.(); });
 
     // ride HUD
     this.rideEl = el('div', 'hk-ride', `<div class="hk-ride-name"></div><div class="hk-ride-text"></div><div class="hk-bar"><i></i></div>`);
@@ -123,7 +142,11 @@ export class UI {
     this.rideBar = this.rideEl.querySelector('.hk-bar');
     this.rideFill = this.rideBar.firstElementChild;
     this.exitBtn = el('button', 'hk-btn pink hk-exit', `Exit ride <span class="hk-kbd">X</span>`);
-    this.exitBtn.addEventListener('click', () => { this.game.audio?.play('click'); this.game.player?.exitRide(false); });
+    this.exitBtn.addEventListener('click', () => {
+      const p = this.game.player; if (!p) return;
+      this.game.audio?.play('click');
+      if (p.state === 'sit') p.standUp?.(); else p.exitRide(false);
+    });
     r.appendChild(this.exitBtn);
 
     // interaction prompt
@@ -145,12 +168,16 @@ export class UI {
   bindEvents() {
     const ev = this.game.events;
     ev.on('game:start', () => { this.refreshName(); this.gems = this.game.quests?.gemsFound || 0; this.renderGems(); this.splash(); });
-    ev.on('gem:found', () => {
-      this.gems = Math.max(this.gems + 1, this.game.quests?.gemsFound || 0);
+    ev.on('gem:found', ({ kind } = {}) => {
+      // Sunset Gems (day quests) have their own counter in the objective; the HUD counts Royal Gems only.
+      if (kind === 'sunset') return;
+      this.gems = Math.min(GEM_TOTAL, Math.max(this.gems + 1, this.game.quests?.gemsFound || 0));
       this.renderGems(true);
     });
     ev.on('ride:complete', ({ name }) => this.celebrate(name));
     ev.on('settings:change', (s) => this.applySettings(s));
+    ev.on('weather:change', ({ weather } = {}) => this.renderWeather(weather));
+    ev.on('day:change', ({ day } = {}) => { this.helpOpen?.querySelector('.hk-tip')?.replaceWith(this.helpTip()); });
     ev.on('unlock', ({ accessory }) => this.toast(`🎁 New accessory unlocked: ${ACC_NAMES[accessory] || accessory} — ${this.touch ? 'tap Avatar' : 'press C'} to try it on!`, 4200));
   }
 
@@ -162,6 +189,7 @@ export class UI {
       if (this.helpOpen && (e.code === 'Escape' || e.code === 'KeyH' || e.key === '?')) { this.toggleHelp(false); return; }
       if (this.menuOpen || this.dialogueOpen || this._chooser || !this.game.started) return;
       if (e.code === 'KeyC') this.openCreator();
+      else if (e.code === 'KeyK') this.openWeather();
       else if (e.code === 'KeyM') this.toggleMute();
       else if (e.code === 'KeyH' || e.key === '?') this.toggleHelp(true);
     });
@@ -194,6 +222,7 @@ export class UI {
     this.gems = this.game.quests?.gemsFound || 0;
     this.renderGems();
     this.muteBtn.textContent = this.game.audio?.muted ? '🔇' : '🔊';
+    this.renderWeather();
     this.hud.classList.add('show');
   }
 
@@ -238,7 +267,7 @@ export class UI {
     spk.textContent = speaker; spk.style.background = color; if (!speaker) spk.style.display = 'none';
     hint.textContent = this.touch ? 'tap' : 'E / Space';
     this.root.appendChild(catcher); this.root.appendChild(box);
-    requestAnimationFrame(() => box.classList.add('show'));
+    void box.offsetWidth; box.classList.add('show');   // flush, then animate in (no rAF: a slow frame must not delay the box)
 
     return new Promise((resolve) => {
       let idx = 0, shown = 0, done = false, raf = 0, last = 0, acc = 0, talkTick = 0, list = null, result;
@@ -319,7 +348,7 @@ export class UI {
     if (speaker) { const spk = card.querySelector('.hk-speaker'); spk.textContent = speaker; spk.style.background = color; }
     overlay.appendChild(card);
     this.root.appendChild(overlay);
-    requestAnimationFrame(() => overlay.classList.add('show'));
+    void overlay.offsetWidth; overlay.classList.add('show');
     return new Promise((resolve) => {
       let closed = false;
       const close = (value) => {
@@ -353,6 +382,71 @@ export class UI {
   /** Dismiss an open choose() modal (resolves it with null). Safe to call when none is open. */
   closeChoose() { this._chooser?.close(null); }
   get chooseOpen() { return !!this._chooser; }
+
+  /**
+   * choose() with paging: any number of options, at most 4 buttons per page. Longer lists show 3 options plus
+   * a 'More…' button that advances to the next page (wrapping around). Resolves like choose().
+   */
+  async chooseMenu({ options = [], perPage = 4, more = 'More…', ...rest } = {}) {
+    if (options.length <= perPage) return this.choose({ options, ...rest });
+    const size = perPage - 1, pages = Math.ceil(options.length / size);
+    let page = 0;
+    for (let guard = 0; guard < 40; guard++) {
+      const slice = options.slice(page * size, page * size + size);
+      const picked = await this.choose({ ...rest, options: [...slice, { label: more, sub: `page ${page + 1}/${pages}`, value: '__more__' }] });
+      if (picked !== '__more__') return picked;
+      page = (page + 1) % pages;
+    }
+    return null;
+  }
+
+  /** Fade the whole screen to black ('out', default) or back from black ('in') over `ms`. Resolves when done. */
+  fade(ms = 800, dir = 'out') {
+    if (!this.fadeEl) { this.fadeEl = el('div', 'hk-fade'); this.root.appendChild(this.fadeEl); }
+    const f = this.fadeEl;
+    f.style.transitionDuration = `${ms}ms`;
+    void f.offsetWidth;
+    f.classList.toggle('show', dir !== 'in');
+    return new Promise((resolve) => setTimeout(() => { if (dir === 'in' && !f.classList.contains('show')) { f.remove(); this.fadeEl = null; } resolve(); }, ms + 30));
+  }
+
+  /** Big centered title card ("Day 2") with an optional subtitle, shown for `ms` then removed. Resolves after. */
+  titleCard(text, sub = '', ms = 2200) {
+    const card = el('div', 'hk-title-card', `<h1></h1>${sub ? '<p></p>' : ''}`);
+    card.querySelector('h1').textContent = text;
+    if (sub) card.querySelector('p').textContent = sub;
+    this.root.appendChild(card);
+    void card.offsetWidth;
+    card.classList.add('show');
+    return new Promise((resolve) => setTimeout(() => { card.classList.remove('show'); setTimeout(() => { card.remove(); resolve(); }, 350); }, ms));
+  }
+
+  // ---------- weather ----------
+  renderWeather(weather) {
+    const w = weather || this.game.world?.weather || this.game.settings?.weather || 'sunny';
+    this.weatherBtn.textContent = WEATHER_ICON[w] || '☀️';
+  }
+  /** Weather picker (☀️ button / K): two pages of three, applied to settings and the world. */
+  async openWeather() {
+    if (this.menuOpen || this.dialogueOpen || this._chooser || !this.game.started) return;
+    this.game.audio?.play('click');
+    const current = this.game.world?.weather || this.game.settings?.weather || 'sunny';
+    const options = WEATHER_OPTIONS.map((w) => ({ ...w, sub: w.value === current ? 'right now' : w.sub }));
+    const weather = await this.chooseMenu({ title: 'Pick the weather', options, cancel: 'Leave it' });
+    if (!weather) return;
+    this.setWeather(weather);
+  }
+  setWeather(weather) {
+    const g = this.game;
+    applySettings(g, { weather });
+    if (typeof g.world?.setWeather === 'function') g.world.setWeather(weather);
+    else g.events.emit('weather:change', { weather });   // the world emits this itself once it has setWeather
+    this.renderWeather(weather);
+    const w = WEATHER_OPTIONS.find((o) => o.value === weather);
+    this.toast(`${w?.label || weather} — ${w?.sub || ''}`.trim());
+  }
+  /** The house closet calls this (CONTRACT: ui.openDressingRoom). Same thing as the Avatar button / C. */
+  openDressingRoom() { return this.openCreator(); }
 
   // ---------- per-frame ----------
   update(dt, t) {
@@ -390,8 +484,32 @@ export class UI {
         this.rideText.textContent = ride.hudText || `${Math.ceil(left)}s left · hands up! 🙌`;
       }
       this.rideEl.classList.add('show'); this.exitBtn.classList.add('show'); this.hud.classList.add('riding');
+    } else if (p.state === 'sit' || p.state === 'slide' || p.sitHint) {
+      // seated on a bench / swing, or whooshing down a slide: reuse the ride bar as a hint strip
+      const sitting = p.state === 'sit' || !!p.sitHint;
+      if (this.rideFor !== p.state) {
+        this.rideFor = p.state;
+        this.rideName.textContent = sitting ? 'Taking a break 🪑' : 'Wheee! 🦩';
+        this.rideText.textContent = sitting ? (this.touch ? 'tap ✕ or move to stand up' : 'X / EXIT to stand up') : 'Wheee!';
+        this.rideBar.hidden = true;
+      }
+      this.rideEl.classList.add('show'); this.hud.classList.add('riding');
+      this.exitBtn.classList.toggle('show', sitting);
     } else { this.rideFor = null; this.rideEl.classList.remove('show'); this.exitBtn.classList.remove('show'); this.hud.classList.remove('riding'); }
     this.touchCtl?.setRiding(!!riding, riding ? p.ride.kind : null);
+
+    // ✦ item button: visible while holding something, walking, and not next to an interactable
+    const items = this.game.items || this.game.quests?.items;
+    const uiBusy = this.dialogueOpen || this.menuOpen || this._chooser || this.locks.size > 0;
+    const act = p.state === 'walk' && !p.frozen && !uiBusy && !n && items?.actionLabel ? items.actionLabel() : null;
+    if (act) {
+      if (this.itemFor !== act.verb + act.emoji) {
+        this.itemFor = act.verb + act.emoji;
+        this.itemBtn.querySelector('.hk-item-ico').textContent = act.emoji;
+        this.itemBtn.querySelector('.hk-item-txt').textContent = `${act.verb}${this.touch ? '' : ' (E)'}`;
+      }
+      this.itemBtn.classList.add('show');
+    } else { this.itemFor = null; this.itemBtn.classList.remove('show'); }
 
     // keep gem counter honest even if quests updates after the event
     if ((this.game.quests?.gemsFound || 0) > this.gems) { this.gems = this.game.quests.gemsFound; this.renderGems(true); }
@@ -414,7 +532,9 @@ export class UI {
   helpTip() {
     const [p1, p2] = this.game.settings?.princesses || [];
     const total = this.game.world?.gemSpots?.length || GEM_TOTAL;
-    return el('p', 'hk-tip', `Find all ${total} Royal Gems, ride every ride, and chat with Princess ${esc(p1?.name || '1')} and Princess ${esc(p2?.name || '2')} to unlock new accessories!`);
+    const day = this.game.quests?.day || 1;
+    if (day > 1) return el('p', 'hk-tip', `Day ${day}! Finish today's quests (see the ★ objective), then sleep in your bed at the house by the entrance to start Day ${day + 1}.`);
+    return el('p', 'hk-tip', `Find all ${total} Royal Gems, ride every ride, and chat with Princess ${esc(p1?.name || '1')} and Princess ${esc(p2?.name || '2')} to unlock new accessories! Finish every quest, then sleep in your bed to start Day 2.`);
   }
   refreshName() { this.nameEl.textContent = this.game.player?.config?.name || 'Explorer'; }
   renderGems(bump = false) {
@@ -471,14 +591,17 @@ export class UI {
         <li><span class="hk-keys"><kbd>E</kbd></span> talk / ride</li>
         <li><span class="hk-keys"><kbd>X</kbd></span> exit a ride</li>
         <li><span class="hk-keys"><kbd>🖱 drag</kbd></span> look around · <kbd>scroll</kbd> zoom</li>
-        <li><span class="hk-keys"><kbd>C</kbd></span> dressing room</li>
+        <li><span class="hk-keys"><kbd>E</kbd></span> eat / squish what you're holding</li>
+        <li><span class="hk-keys"><kbd>C</kbd> <kbd>K</kbd></span> dressing room · weather</li>
         <li><span class="hk-keys"><kbd>M</kbd> <kbd>H</kbd></span> mute · this help</li>`;
       const tc = `
         <li><span class="hk-keys"><kbd>🕹 left stick</kbd></span> move</li>
         <li><span class="hk-keys"><kbd>⤒ big button</kbd></span> jump</li>
         <li><span class="hk-keys"><kbd>⚡</kbd></span> hold to run</li>
         <li><span class="hk-keys"><kbd>tap the bubble</kbd></span> talk / ride</li>
-        <li><span class="hk-keys"><kbd>✕</kbd></span> exit a ride</li>
+        <li><span class="hk-keys"><kbd>✕</kbd></span> exit a ride / stand up</li>
+        <li><span class="hk-keys"><kbd>✦</kbd></span> eat / squish what you're holding</li>
+        <li><span class="hk-keys"><kbd>☀️</kbd></span> pick the weather</li>
         <li><span class="hk-keys"><kbd>drag right side</kbd></span> look around</li>`;
       this.helpOpen.innerHTML = `<div class="hk-help"><button class="hk-btn round hk-close">✕</button><h2>How to play</h2><ul>${this.touch ? tc : kb}</ul></div>`;
       this.helpOpen.firstElementChild.appendChild(this.helpTip());

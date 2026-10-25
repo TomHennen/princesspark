@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { Track, makeSign, makeStripeTexture } from './shared/track.js';
+import { Track, makeSign, makeStripeTexture, addTrackColliders } from './shared/track.js';
 import { MeshBuilder } from '../world/builder.js';
 
 const LAP = 40, TUBES = 4, SEG = 1.6, SPRAY_N = 28, TORCHES = 8;
@@ -179,33 +179,38 @@ export class LazyRiver extends Ride {
     const sign = makeSign(['LAZY LAGOON', 'RIVER'], { w: 6.5, h: 2.0, bg: '#1b5e6b', fg: '#ffe082', border: '#ffe082', boardColor: 0x8d5a2b });
     sign.position.set(-10, 5.6, -34); sign.rotation.y = Math.PI; this.group.add(sign);   // faces the promenade (north)
     const sign2 = makeSign(['TUBES THIS WAY'], { w: 3.2, h: 0.7, bg: '#ffffff', fg: '#3aa8e0', border: '#ff6fb5', boardColor: 0xffd600 });
-    sign2.position.set(-14.2, 1.5, -33.2); sign2.rotation.y = Math.PI; this.group.add(sign2);
+    sign2.position.set(-15.8, 1.5, -33.2); sign2.rotation.y = Math.PI; this.group.add(sign2);   // west of the tube rack, clear of it
+    const signPost = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.2, 0.12), M.vc); signPost.position.set(-15.8, 0.6, -33.2); signPost.userData.noOcclude = true; this.group.add(signPost);
 
-    // colliders: outer wall of the loop (coarse), open at the station corner; the tiki island is unreachable anyway
-    this.addBoxCollider(new THREE.Vector3(9.5, 0.6, -29.6), new THREE.Vector3(33, 1.4, 1.0));
-    this.addBoxCollider(new THREE.Vector3(30.4, 0.6, 0), new THREE.Vector3(1.0, 1.4, 50));
-    this.addBoxCollider(new THREE.Vector3(26, 0.6, 24), new THREE.Vector3(10, 1.4, 1.0));
-    this.addBoxCollider(new THREE.Vector3(9, 0.6, 30.2), new THREE.Vector3(26, 1.4, 1.0));
-    this.addBoxCollider(new THREE.Vector3(-10.5, 0.6, 20), new THREE.Vector3(1.0, 1.4, 20));
-    this.addBoxCollider(new THREE.Vector3(-10.5, 0.6, -16), new THREE.Vector3(1.0, 1.4, 24));
+    // colliders: the river itself (bank to bank) in short boxes along the loop so nobody wades in;
+    // the tunnel and waterfall rocks; the station rails. The tiki island is enclosed by the river.
+    addTrackColliders(this, tr, { maxH: 99, width: 6.1, step: 3.2, lift: 0.8 });
+    tr.trackAt((this.sTunnel[0] + this.sTunnel[1]) / 2, _p);
+    this.addBoxCollider(new THREE.Vector3(_p.x, 1.2, _p.z), new THREE.Vector3(this.sTunnel[1] - this.sTunnel[0] + 2, 2.4, 9.4));
+    this.addBoxCollider(new THREE.Vector3(this.fallPos.x, 2, this.fallPos.z), new THREE.Vector3(10.4, 4, 4));
+    this.addBoxCollider(new THREE.Vector3(-15.8, 0.6, -33.2), new THREE.Vector3(0.3, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(-13.4, 0.5, -31.5), new THREE.Vector3(0.3, 1, 5));
     this.addBoxCollider(new THREE.Vector3(-6.6, 0.5, -31.5), new THREE.Vector3(0.3, 1, 5));
     this.addBoxCollider(new THREE.Vector3(-10, 0.5, -34), new THREE.Vector3(7, 1, 0.5));
   }
 
+  makeTube(a, b) {
+    const paint = (g, c) => { const col = new THREE.Color(c), k = g.attributes.position.count, arr = new Float32Array(k * 3); for (let i = 0; i < k; i++) { arr[i * 3] = col.r; arr[i * 3 + 1] = col.g; arr[i * 3 + 2] = col.b; } g.setAttribute('color', new THREE.BufferAttribute(arr, 3)); return g; };
+    const geo = mergeGeometries([
+      paint(new THREE.TorusGeometry(0.85, 0.32, 8, 18).rotateX(Math.PI / 2).translate(0, 0.3, 0), a),
+      paint(new THREE.CylinderGeometry(0.62, 0.62, 0.08, 18).translate(0, 0.12, 0), b),
+      paint(new THREE.BoxGeometry(0.5, 0.08, 0.3).translate(0.8, 0.64, 0.45), b), paint(new THREE.BoxGeometry(0.5, 0.08, 0.3).translate(-0.8, 0.64, 0.45), b),
+    ], false);
+    const g = new THREE.Group(), mesh = new THREE.Mesh(geo, this.M.tube); mesh.castShadow = true; mesh.userData.noOcclude = true; g.add(mesh);
+    this.group.add(g);
+    return g;
+  }
+
   buildTubes(M) {
     this.tubes = [];
-    const paint = (g, c) => { const col = new THREE.Color(c), k = g.attributes.position.count, a = new Float32Array(k * 3); for (let i = 0; i < k; i++) { a[i * 3] = col.r; a[i * 3 + 1] = col.g; a[i * 3 + 2] = col.b; } g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; };
     const cols = [[PINK, WHITE], [YELLOW, BLUE], [BLUE, WHITE], [0x7bd94a, YELLOW]];
     for (let k = 0; k < TUBES; k++) {
-      const [a, b] = cols[k];
-      const geo = mergeGeometries([
-        paint(new THREE.TorusGeometry(0.85, 0.32, 8, 18).rotateX(Math.PI / 2).translate(0, 0.3, 0), a),
-        paint(new THREE.CylinderGeometry(0.62, 0.62, 0.08, 18).translate(0, 0.12, 0), b),
-        paint(new THREE.BoxGeometry(0.5, 0.08, 0.3).translate(0.8, 0.64, 0.45), b), paint(new THREE.BoxGeometry(0.5, 0.08, 0.3).translate(-0.8, 0.64, 0.45), b),
-      ], false);
-      const g = new THREE.Group(), mesh = new THREE.Mesh(geo, M.tube); mesh.castShadow = true; g.add(mesh);
-      this.group.add(g);
+      const g = this.makeTube(...cols[k]);
       this.tubes.push({ group: g, s: this.sBoard + (k * this.track.length) / TUBES, phase: k * 1.7 });
     }
     this.rider = this.tubes[0];
@@ -235,9 +240,25 @@ export class LazyRiver extends Ride {
     }
   }
 
+  /** Remote rider i floats in an extra tube 3 m (per peer) behind the local one, drifting with the same current. */
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) {
+      const cols = [[WHITE, PINK], [0xff8c1a, WHITE], [0xb44cff, YELLOW], [WHITE, BLUE]];
+      const g = this.makeTube(...cols[i % cols.length]);
+      const tb = { group: g, s: this.track.wrap(this.rider.s - 3 * (i + 1)), phase: 2.3 + i * 1.1, peer: true, behind: 3 * (i + 1) };
+      this.tubes.push(tb);
+      const seat = new THREE.Object3D(); seat.position.set(0, 0.3, 0); g.add(seat);
+      this._peerSeats[i] = seat;
+      this.placeTubes(this.game.time);
+    }
+    return this._peerSeats[i];
+  }
+
   onBoard() {
     const L = this.track.length;
-    this.tubes.forEach((tb, k) => { tb.s = this.track.wrap(this.sBoard + (k * L) / TUBES); });
+    let k = 0;
+    this.tubes.forEach((tb) => { tb.s = this.track.wrap(tb.peer ? this.sBoard - tb.behind : this.sBoard + (k++ * L) / TUBES); });
     this.lapDist = 0; this.splashed = false;
     this.placeTubes(this.game.time);
   }

@@ -23,7 +23,7 @@ if (!args.base) {
 const browser = await chromium.launch({ executablePath: EXE, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
 // --vw/--vh set the viewport (default 1280x720); --touch emulates a touch device (hasTouch + isMobile, coarse pointer).
 const touch = 'touch' in args;
-const page = await browser.newPage({ viewport: { width: Number(args.vw || 1280), height: Number(args.vh || 720) }, hasTouch: touch, isMobile: touch, deviceScaleFactor: 1 });
+const page = await browser.newPage({ viewport: { width: Number(args.vw || 1280), height: Number(args.vh || 720) }, hasTouch: touch, isMobile: touch && !('desktop' in args), deviceScaleFactor: 1 });
 const errors = [];
 page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(`[${m.type()}] ${m.text()}`); });
 page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));

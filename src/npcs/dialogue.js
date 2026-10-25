@@ -10,8 +10,11 @@
 //   `next` is a DialogueNode, a plain string[] (shorthand for { lines }), a function returning either (built
 //   lazily so trees can loop back to a hub), or null/undefined to end the conversation after this node.
 //   Walk it with walkDialogue() below, or by hand with game.ui.dialogue(lines, { choices }).
-import { ACCESSORY_NAMES, RIDE_IDS } from '../quests/quests.js';
+import { ACCESSORY_NAMES, RIDE_IDS, GEM_TOTAL } from '../quests/quests.js';
 import { DEFAULT_SETTINGS } from '../core/settings.js';
+
+const GEM_WORD = { 12: 'Twelve', 14: 'Fourteen' }[GEM_TOTAL] || String(GEM_TOTAL);
+const ITEM_WORDS = { needoh: 'a Needoh', balloon: 'a balloon', wand: 'a glow wand', plushie: 'a flamingo plushie', iceCream: 'an ice cream', cottonCandy: 'cotton candy', pretzel: 'a pretzel', lemonade: 'a lemonade' };
 
 const RIDE_NAMES = {
   coaster: "Dragon's Breath Coaster", logflume: 'Gator Gulch Log Flume', carousel: 'Royal Carousel', ferris: 'Sunshine Wheel',
@@ -57,14 +60,23 @@ export function colorWord(hex) {
 }
 
 /** Resolve "who am I, who is my sister, what's the park called" from settings for a given princess id. */
-function ctxFor(npcId, settings, playerName) {
+function ctxFor(npcId, settings, playerName, quests = null) {
   const s = settings || DEFAULT_SETTINGS;
   const list = s.princesses || DEFAULT_SETTINGS.princesses;
   const p1 = list[0] || DEFAULT_SETTINGS.princesses[0];
   const p2 = list[1] || DEFAULT_SETTINGS.princesses[1];
   const me = npcId === 'p1' ? p1 : p2;
   const sis = npcId === 'p1' ? p2 : p1;
-  return { name: playerName || 'Explorer', me, sis, p1, p2, park: s.parkName || DEFAULT_SETTINGS.parkName };
+  const game = quests?.game;
+  const held = game?.player?.config?.held || 'none';
+  const weather = game?.world?.weather || s.weather || 'sunny';
+  return { name: playerName || 'Explorer', me, sis, p1, p2, park: s.parkName || DEFAULT_SETTINGS.parkName, held, weather, day: quests?.day || 1 };
+}
+/** Up to one flavour line reacting to what the player holds, else to non-sunny weather (empty array otherwise). */
+function flavour(P, c) {
+  if (c.held !== 'none' && P.held[c.held]) return [P.held[c.held](c)];
+  if (c.weather !== 'sunny' && P.weather[c.weather]) return [P.weather[c.weather](c)];
+  return [];
 }
 
 // ---------- tree helpers ----------
@@ -98,7 +110,7 @@ const P1 = {
     `Oh, hello! Welcome to ${c.park}, ${c.name}. I'm Princess ${c.me.name}.`,
     `That's my little sister ${c.sis.name} in ${colorWord(c.sis.color)}. We run this park together — co-princesses, equal votes.`,
     `There's a castle up north, a lagoon with real flamingos, ${RIDE_COUNT_WORD} rides and a whole water park out east.`,
-    `Twelve Royal Gems are hidden around the park. I'll give you hints — a good hint beats a map.`,
+    `${GEM_WORD} Royal Gems are hidden around the park. I'll give you hints — a good hint beats a map.`,
     `Finish quests and you unlock accessories in the Dressing Room. Press C or the Avatar button to try them on.`,
   ],
   greet: (c) => [
@@ -136,7 +148,7 @@ const P1 = {
     `Tipsy Teacups, south: gentle if you pick Gentle. Do NOT let ${c.sis.name} pick the speed for you.`,
   ],
   gems: (q, c) => [
-    `You've found ${q.gemsFound} of 12 Royal Gems. Here's how I'd search:`,
+    `You've found ${q.gemsFound} of ${GEM_TOTAL} Royal Gems. Here's how I'd search:`,
     `North: behind the castle, where the flamingos nap. East: the lagoon shore and behind the Sunshine Wheel.`,
     `West: the quiet side of the coaster and the Grid Riders arena. South: the fence corners near the gates.`,
     `Look for a glowing ring on the ground. That's a gem's little doorstep.`,
@@ -164,7 +176,7 @@ const P1 = {
         `The far side of the coaster is quiet. Quiet places hide gems.`,
         `Look for the glowing ring on the ground. That's the gem's little doorstep.`,
       ];
-      return [`You've found ${n} of 12 Royal Gems.`, all[n % all.length]];
+      return [`You've found ${n} of ${GEM_TOTAL} Royal Gems.`, all[n % all.length]];
     },
     'ride-all': (q) => {
       const left = RIDE_IDS.filter((r) => !q.state.ridesRidden.includes(r)).map(rideName);
@@ -176,18 +188,45 @@ const P1 = {
     'thrill-seeker': (q) => [`The coaster wants you three times. You've done ${q.progress('thrill-seeker').progress}.`, `Keep your eyes open on the first drop. That's the whole point of it.`],
     'royal': () => [`You're so close. One more quest and the Royal Keys are yours.`],
   },
-  allDone: () => [`Everything's done — go enjoy the park! Try the water park if you haven't been yet.`],
+  allDone: (c) => [`Everything on today's list is done, ${c.name}. Go home and sleep — your bed is in the little house by the entrance.`, `Tomorrow there'll be a brand new list. I've already written it. Don't peek.`],
+  // Day 2+: the morning briefing mentions the day's first quests (titles come from quests, names from settings).
+  dayGreet: (c, titles) => [
+    pick([`Good morning, ${c.name}! Day ${c.day} at ${c.park}. I've got today's list right here.`, `Day ${c.day}, ${c.name}! ${c.sis.name} woke me up at dawn to write today's quests.`]),
+    titles.length > 1 ? `First: ${titles[0]}. Then: ${titles[1]}.` : titles.length ? `Today: ${titles[0]}.` : `You've already finished today's list. Show-off.`,
+    `Ask me "what should I do next" any time and I'll point you the right way.`,
+  ],
+  held: {
+    balloon: (c) => `Is that a balloon? Hold on tight — the wind off the lagoon steals three a day.`,
+    plushie: (c) => `A flamingo plushie! The real ones are jealous. Don't let them see it.`,
+    needoh: (c) => `A Needoh. ${c.sis.name} squished hers until it begged for mercy. Be gentler.`,
+    wand: (c) => `A glow wand! Wave it near the castle tonight; the walls sparkle back. Park magic.`,
+    iceCream: (c) => `Ice cream before noon? I approve. Eat it before the Florida sun does.`,
+    cottonCandy: (c) => `Cotton candy! The pink cloud. Eat it quick before it gets sticky in this heat.`,
+    pretzel: (c) => `A warm pretzel. Smart. Salt for the heat, carbs for the coaster.`,
+    lemonade: (c) => `Lemonade! Extra sour, I hope. ${c.sis.name} drinks hers through her teeth.`,
+  },
+  weather: {
+    cloudy: () => `Nice and cloudy today. Easier on the eyes, and the flamingos nap more.`,
+    rain: () => `Rain! Classic Florida. It'll pass in twenty minutes — the rides run anyway.`,
+    storm: () => `A proper storm. Stay off the Sunshine Wheel for a bit and watch the lightning from the gazebo.`,
+    sunset: () => `Sunset at the park. My favourite hour — the castle goes gold. Ride the wheel now.`,
+    night: () => `Night time! The lights are on, the coaster glows, and nobody has to go to bed. Except you, eventually.`,
+  },
   react: (id, q, c) => {
     const acc = (QUEST_REWARDS[id] || []).map(accName).join(' and ');
+    const done = q.questById?.(id);
+    const doneTitle = done ? q.title(done) : id.replace(/^d\d+-/, '').replace(/-/g, ' ');
     const base = {
       'meet': [`You met us both! Officially a friend of the court, ${c.name}.`, `I slipped a Halo into your Dressing Room. Press C or tap Avatar to put it on.`],
       'first-ride': [`First ride done! How was it? I always keep my eyes open on the drops.`, `Eight more rides to go if you want the full tour.`],
-      'gems': [`All twelve Royal Gems! I honestly thought that would take you a week.`, `Fairy Wings are waiting in the Dressing Room (press C). You earned the flutter.`],
+      'gems': [`All ${GEM_TOTAL} Royal Gems! I honestly thought that would take you a week.`, `Fairy Wings are waiting in the Dressing Room (press C). You earned the flutter.`],
       'ride-all': [`Every single ride. That's a complete tour of ${c.park}, ${c.name}.`, `A Royal Crown and a Wizard Hat are yours — Dressing Room, press C. Pick one or alternate.`],
       'speed-demon': [`Three laps on Thunder Bikes! ${c.sis.name} is going to be unbearable about this.`, `Cool Shades unlocked. Perfect for pretending you didn't just scream.`],
       'grid-master': [`Ten bits on the Grid. You've got a steadier hand than my sister.`, `Cat Ears are in your Dressing Room now. Press C to try them.`],
       'thrill-seeker': [`Three times on Dragon's Breath? You are braver than I am.`, `A Hero Cape is yours. It flutters when you run — very dramatic.`],
-    }[id] || [`You finished "${id}"! Well done.`, acc ? `${acc} unlocked — check the Dressing Room with C.` : `Keep going!`];
+    }[id] || (done?.royalDay
+      ? [`That's every quest for Day ${done.royalDay}! Go sleep in your bed at the house by the entrance.`, `Tomorrow's list is already written. Rest up.`]
+      : [`You finished "${doneTitle}"! Well done.`, acc ? `${acc} unlocked — check the Dressing Room with C.` : `On to the next one — ask me if you need a tip.`]);
     return [`Oh! ${pick(['Wonderful news.', 'Look at you.', 'I heard the fanfare from here.'])}`, ...base];
   },
   finale: (c) => [
@@ -282,8 +321,31 @@ const P2 = {
     'thrill-seeker': (q, c) => [`Coaster three times${tail(c.me)}. You're at ${q.progress('thrill-seeker').progress}. The first drop is UNREAL.`, `Hands up on the drop or it doesn't count. (It counts. But hands up.)`],
     'royal': (q, c) => [`${LOUD(c.me, 'yesss')}. One more quest and you get the Royal Keys!! I'm so hype right now.`],
   },
-  allDone: (c) => [`You did EVERYTHING${tail(c.me)}. Just go play. Ride the teacups on TURBO. For me.`],
+  allDone: (c) => [`You did EVERYTHING on today's list${tail(c.me)}. Go home, go to BED. Your house is by the entrance.`, `Tomorrow = new quests. I wrote half of them. The silly half.`],
+  dayGreet: (c, titles) => [
+    pick([`${LOUD(c.me, 'yesss')}! DAY ${c.day}! ${c.name}! New day, new list, let's GO.`, `Morning ${c.name}!! It's Day ${c.day}${tail(c.me) || '.'} ${c.sis.name} made a list. I made it louder.`]),
+    titles.length > 1 ? `Okay okay: ${titles[0]}. And ${titles[1]}. GO.` : titles.length ? `Today: ${titles[0]}${tail(c.me)}!` : `Wait, you already did everything?? ${LOUD(c.me, 'whoa')}.`,
+  ],
+  held: {
+    balloon: (c) => `BALLOON${tail(c.me)}!! Don't let go. Don't let go don't let go don't let go.`,
+    plushie: (c) => `A flamingo plushie!! Hug it. HUG IT. Okay you're hugging it. ${CP(c.me, 'Yesss')}.`,
+    needoh: (c) => `A Needoh${tail(c.me)}! Squish it. Squish it again. I could watch that all day. I have.`,
+    wand: (c) => `GLOW WAND. Wave it! Sparkles${tail(c.me)}! ${c.sis.name} says it's "just a light". It is MAGIC.`,
+    iceCream: (c) => `ICE CREAM. ${CP(c.me, 'Okay')} you have to eat that NOW, it's melting, go go go.`,
+    cottonCandy: (c) => `Cotton candy${tail(c.me)}!! Pink cloud! Eat the cloud! EAT THE CLOUD.`,
+    pretzel: (c) => `A pretzel. Respect. Pretzel then Thunder Bikes. That's the combo${tail(c.me)}.`,
+    lemonade: (c) => `Lemonade${tail(c.me)}! Is it the extra sour one? Make the face. MAKE THE FACE.`,
+  },
+  weather: {
+    cloudy: (c) => `Cloudy today. Chill vibes${tail(c.me)}. Perfect for the lazy river.`,
+    rain: (c) => `RAIN! Puddles${tail(c.me)}! Jump in the puddles. I'm not allowed. You do it for me.`,
+    storm: (c) => `STORM. ${LOUD(c.me, 'whoa')}. The lightning is SO cool from the gazebo. Stay off the wheel though.`,
+    sunset: (c) => `Sunset${tail(c.me)}! Everything's orange! Go up the Sunshine Wheel RIGHT NOW. Trust me.`,
+    night: (c) => `NIGHT MODE${tail(c.me)}! The coaster GLOWS. The castle GLOWS. I glow. Okay I don't. But I feel like I do.`,
+  },
   react: (id, q, c) => {
+    const done = q.questById?.(id);
+    const doneTitle = done ? q.title(done) : id.replace(/^d\d+-/, '').replace(/-/g, ' ');
     const base = {
       'meet': [`You met both of us! ${CP(c.me, 'Yesss')}, that makes you a friend of the castle, ${c.name}.`, `${c.sis.name} gave you a Halo. Press C, Dressing Room, put it on, look angelic${tail(c.me)}.`],
       'first-ride': [`FIRST RIDE DONE. ${CP(c.me, 'So')} how was it. Was it the coaster. Tell me it was the coaster.`, `Okay now do all the rest. ${CP(c.me, 'Go')}.`],
@@ -292,7 +354,9 @@ const P2 = {
       'speed-demon': [`THREE LAPS ON THUNDER BIKES. ${LOUD(c.me, 'yesss')}. We are the same person now.`, `Cool Shades unlocked. Put them on. Press C. Immediately${tail(c.me)}.`],
       'grid-master': [`Ten bits on the Grid! ${CP(c.me, 'Okay')} that's MY arena and you crushed it.`, `Cat Ears${tail(c.me)}. Dressing Room. Press C. Meow.`],
       'thrill-seeker': [`Three coaster rides?! ${CP(c.me, 'Okay')} you're a legend. A LEGEND, ${c.name}.`, `Hero Cape unlocked! It flaps when you run. Press C${tail(c.me)}.`],
-    }[id] || [`You did the "${id}" quest${tail(c.me)}!`, `Check the Dressing Room with C${tail(c.me)}.`];
+    }[id] || (done?.royalDay
+      ? [`DAY ${done.royalDay} DONE${tail(c.me)}!! Go to bed! Your house! By the gate! Sleep! Tomorrow = MORE.`]
+      : [`You did "${doneTitle}"${tail(c.me)}!`, `Next one! Ask me what's next. I know. I always know. Mostly.`]);
     return [pick([`${LOUD(c.me, 'yesss')}!!`, `${CP(c.me, 'Whoa')}. ${LOUD(c.me, 'whoa')}.`, `Yooooo ${c.name}!!`]), ...base];
   },
   finale: (c) => [
@@ -341,7 +405,18 @@ function buildTree(P, quests, c, opening, { finale = false } = {}) {
   };
   const nextStep = () => {
     const q = quests.activeQuest?.();
-    const hint = q && P.hints[q.id] ? P.hints[q.id](quests, c) : P.allDone(c);
+    let hint;
+    if (!q) hint = P.allDone(c);
+    else if (P.hints[q.id]) hint = P.hints[q.id](quests, c);
+    else if (q.royalDay) hint = P.hints.royal(quests, c);
+    else {
+      // day 2+ quests carry their own tip; each princess frames it her way
+      const { progress, total } = quests.progress(q.id);
+      const title = quests.title(q);
+      hint = P === P1
+        ? [`Today's job: ${title}. You're at ${progress} of ${total}.`, q.hint || 'You can do it.']
+        : [`${CP(c.me, 'Okay')}: ${title}${tail(c.me)}! ${progress}/${total} so far.`, q.hint ? `${q.hint} GO.` : 'GO.'];
+    }
     return node([...hint, pick(P.closer(c))].slice(0, 4), follow().choices);
   };
   const hub = (lines) => node(lines, [
@@ -361,21 +436,29 @@ function buildTree(P, quests, c, opening, { finale = false } = {}) {
 export function getDialogue(npcId, quests, playerName = 'Explorer', settings = quests?.game?.settings) {
   const P = PRINCESSES[npcId];
   if (!P) return [`Hello, ${playerName}!`];
-  const c = ctxFor(npcId, settings, playerName);
+  const c = ctxFor(npcId, settings, playerName, quests);
   const firstMeeting = !quests.state.talkedTo.includes(npcId);
   const recent = quests.takeRecentCompletions?.() || [];
+  const extra = flavour(P, c);   // reacts to a held item or the weather
 
   // Royal finale: big speech once per princess, then relaxed royal small talk (plus the usual topics).
-  if (quests.state.royal) {
+  if (quests.state.royal && c.day === 1) {
     if (!finaleSeen.has(npcId)) { finaleSeen.add(npcId); return buildTree(P, quests, c, P.finale(c), { finale: true }); }
-    return buildTree(P, quests, c, P.royalTalk(c));
+    return buildTree(P, quests, c, [...P.royalTalk(c), ...extra]);
   }
   // React to the most recent quest completion (skip 'royal' — the finale handles it).
   const reactTo = recent.filter((id) => id !== 'royal').pop();
-  if (reactTo) return buildTree(P, quests, c, P.react(reactTo, quests, c).slice(0, 6));
-  if (firstMeeting) return buildTree(P, quests, c, P.intro(c));
-  return buildTree(P, quests, c, [pick(P.greet(c))]);
+  if (reactTo) return buildTree(P, quests, c, [...P.react(reactTo, quests, c).slice(0, 5), ...extra]);
+  if (firstMeeting) return buildTree(P, quests, c, [...P.intro(c), ...extra]);
+  // Day 2+: the first chat of the day is a briefing on today's quests (once per princess per day).
+  if (c.day > 1 && dayGreeted.get(npcId) !== c.day) {
+    dayGreeted.set(npcId, c.day);
+    const titles = (quests.remainingToday?.() || []).slice(0, 2).map((q) => quests.title(q));
+    return buildTree(P, quests, c, [...P.dayGreet(c, titles), ...extra]);
+  }
+  return buildTree(P, quests, c, [pick(P.greet(c)), ...extra]);
 }
+const dayGreeted = new Map();   // npcId -> last day it gave the morning briefing (in-memory)
 
 // ---------- ambient NPCs: a greeting, then "a hint or a joke" ----------
 const AMBIENT = {
@@ -384,7 +467,7 @@ const AMBIENT = {
       pick([`Welcome to ${c.park}! Princess Plaza is straight ahead — look for the gazebo.`, `Hi there, ${c.name}! Maps are for tourists; just follow the paths and the music.`]),
       pick([`Tip: hold Shift to run. Press E near anything interesting. X gets you off a ride early.`, `Tip: the princesses at the gazebo give quests. Finish them for new outfit pieces (press C).`]),
     ],
-    hint: (q) => [q.gemsFound < 12 ? `The Royal Gems glow with a ring on the ground. Check behind big rides and along the fence.` : `You found every gem? Wow. The princesses must love you.`, `New this season: Splash Cove, the water park out east. Flamingo Falls and the Lazy Lagoon River.`],
+    hint: (q) => [q.gemsFound < GEM_TOTAL ? `The Royal Gems glow with a ring on the ground. Check behind big rides and along the fence.` : `You found every gem? Wow. The princesses must love you.`, `New this season: Splash Cove, the water park out east. Flamingo Falls and the Lazy Lagoon River.`],
     joke: () => pick([[`Why did the flamingo stand on one leg?`, `Because if it lifted the other one, it'd fall over. Classic.`], [`What do you call a princess who loves roller coasters?`, `A thrill-ness. …I'll be here all week.`]]),
   },
   chef: {
@@ -400,14 +483,27 @@ const AMBIENT = {
     ],
     hint: () => [`The Gator Gulch Log Flume splashes hardest in the front seat. Just saying.`, `Splash Cove out east is my other patrol. Flamingo Falls is the big slide; Lazy Lagoon River is the float.`],
     joke: () => pick([[`Why did the gator skip the lazy river?`, `Too slow. He wanted the fast lane. There is no fast lane. He left a review.`], [`What's a lifeguard's favourite ride?`, `The log flume. I'm on duty AND on a ride. Nobody can prove otherwise.`]]),
+    safety: () => [`Rule one: walk on the deck. Rule two: see rule one.`, `Rule three: if a flamingo is in the water, the flamingo has right of way.`],
+  },
+  // Splash Cove pool lifeguards (ids 'lifeguard-1', 'lifeguard-2'…): safety tips, kid-funny.
+  poolguard: {
+    open: (q, c) => [
+      pick([`WALK, please! …Oh, you're walking. Great. Hi, ${c.name}. The deck is slippery, the whistle is loud.`, `Hey ${c.name}. Welcome to Splash Cove. No running, no diving, no feeding the pool noodles.`, `${c.name}! I've whistled at ${q.dayStats?.warns || 0} runner${(q.dayStats?.warns || 0) === 1 ? '' : 's'} today. Don't make it more.`]),
+      pick([`Hold Shift to run anywhere else in the park. Here? Nope. Here we stroll.`, `Flamingo Falls is the big slide. Sit at the top, press E, scream politely.`]),
+    ],
+    hint: (q, c) => [pick([`Safety tip: wait thirty minutes after a pretzel before the lazy river. Twenty for lemonade.`, `Safety tip: the wave pool goes whoosh every so often. Hold your hat. Hold your plushie. Hold everything.`, `Safety tip: sunscreen! Reapply after every ride, every snack and every time ${c.p2.name} shouts.`]), `And if I blow the whistle at you — walk. That's it. That's the whole rule.`],
+    joke: () => pick([[`Why don't lifeguards ride the coaster?`, `Too many loops, not enough water. I keep reaching for the whistle.`], [`What did the pool say to the runner?`, `"Slow down, I'm shallow." …The pool doesn't talk. But it would.`], [`I asked the flamingo to stop standing in the wave pool.`, `It said it was just getting its one foot wet. Technically allowed.`]]),
+    safety: () => [`Pool rules: walk, don't run. Feet first on the slide. Hats off on the wave pool. Smile at the lifeguards.`, `Break one and I whistle. Break two and I whistle LOUDER. There is no three.`],
   },
 };
 export function getAmbientDialogue(npcId, quests, playerName = 'Explorer', settings = quests?.game?.settings) {
-  const a = AMBIENT[npcId];
+  const a = AMBIENT[npcId] || (String(npcId).startsWith('lifeguard') ? AMBIENT.poolguard : null);
   if (!a) return [`Hi, ${playerName}!`];
-  const c = ctxFor('p1', settings, playerName || 'Explorer');
-  return node(a.open(quests, c), [
+  const c = ctxFor('p1', settings, playerName || 'Explorer', quests);
+  const choices = [
     { label: 'Got a hint?', next: () => a.hint(quests, c) },
     { label: 'Tell me a joke!', next: () => a.joke(quests, c) },
-  ]);
+  ];
+  if (a.safety) choices.push({ label: 'What are the rules?', next: () => a.safety(quests, c) });
+  return node(a.open(quests, c), choices);
 }

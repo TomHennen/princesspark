@@ -97,6 +97,83 @@ try {
   await A.screenshot({ path: 'shots/net-two-players.png' });
   console.log('saved shots/net-two-players.png');
 
+  // ---- Riding together. Rides animate on each client's own clock, so a remote rider must sit in OUR copy of the ride.
+  const peerOf = (page) => page.evaluate(() => { const p = [...window.__game.net.peers.values()][0]; if (!p) return null; const r = p.rideObj; return { st: p.st, ride: p.ride, slot: p.slot, seated: p.seated, pos: p.group.position.toArray().map((v) => +v.toFixed(2)), vehicle: !!p.vehicle, vehicleInGroup: !!p.vehicle && p.group.children.includes(p.vehicle), children: p.group.children.length, anim: p.avatar.lastAnim ?? null, held: p.avatar.config.held }; });
+  const seatWorld = (page, rideId, i) => page.evaluate(([rideId, i]) => { const r = window.__game.rides.find((r) => r.id === rideId); const s = r.peerSeat?.(i); if (!s) return null; s.updateWorldMatrix(true, false); const v = new s.position.constructor(); v.setFromMatrixPosition(s.matrixWorld); return v.toArray().map((n) => +n.toFixed(2)); }, [rideId, i]);
+  const board = (page, rideId) => page.evaluate((rideId) => { const g = window.__game, r = g.rides.find((r) => r.id === rideId); if (g.player.state === 'riding') g.player.exitRide(false); g.player.teleport(r.station.x, r.station.y, r.station.z, 0); g.player.boardRide(r); return g.player.state; }, rideId);
+  const unboard = (page) => page.evaluate(() => { const g = window.__game; if (g.player.state === 'riding') g.player.exitRide(false); return g.player.state; });
+  const peerRideIs = (page, rideId) => page.waitForFunction((rideId) => [...window.__game.net.peers.values()][0]?.ride === rideId, rideId, { timeout: 20000, polling: 250 }).catch(() => {});
+  const hasOwn = (page, rideId, fn) => page.evaluate(([rideId, fn]) => { const r = window.__game.rides.find((r) => r.id === rideId); return Object.prototype.hasOwnProperty.call(Object.getPrototypeOf(r), fn); }, [rideId, fn]);
+  const dist3 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+
+  // Coaster: A boards; on B the remote avatar must sit on B's coaster.peerSeat(0), not at A's transmitted spot.
+  await board(A, 'coaster');
+  await peerRideIs(B, 'coaster'); await sleep(1200);
+  let bp = await peerOf(B), seat0 = await seatWorld(B, 'coaster', 0);
+  check(bp?.st === 'riding' && bp.ride === 'coaster' && bp.slot === 0, `B knows A is riding the coaster in slot 0: ${JSON.stringify(bp)}`);
+  check(bp && seat0 && dist3(bp.pos, seat0) < 0.5, `B's avatar for A is on B's coaster.peerSeat(0): ${JSON.stringify(bp?.pos)} vs seat ${JSON.stringify(seat0)}`);
+  // B boards too: both are in B's train, so A's avatar must be right next to B.
+  await board(B, 'coaster'); await sleep(1500);
+  bp = await peerOf(B);
+  const bMe = await B.evaluate(() => window.__game.player.position.toArray().map((v) => +v.toFixed(2)));
+  check(bp && dist3(bp.pos, bMe) < 6, `while both ride, A's avatar is near B in B's train (${dist3(bp?.pos || [0, 0, 0], bMe).toFixed(2)} m): ${JSON.stringify(bp?.pos)} vs me ${JSON.stringify(bMe)}`);
+  await B.screenshot({ path: 'shots/net-coaster-together.png' });
+  console.log('saved shots/net-coaster-together.png');
+  // Both off: the seat slot is released and the remote avatar snaps back to the transmitted spot.
+  await unboard(A); await unboard(B);
+  await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
+  await sleep(500);
+  bp = await peerOf(B);
+  const riders = await B.evaluate(() => window.__game.net.riders());
+  check(bp?.st === 'walk' && bp.ride === null && bp.slot === -1 && !riders.coaster, `after exiting, B sees A walking and the coaster seat slot is free: ${JSON.stringify(bp)} riders=${JSON.stringify(riders)}`);
+  const aExit = await A.evaluate(() => window.__game.player.position.toArray().map((v) => +v.toFixed(2)));
+  check(bp && dist3(bp.pos, aExit) < 2, `remote avatar snapped to A's exit spot: ${JSON.stringify(bp?.pos)} vs ${JSON.stringify(aExit)}`);
+
+  // Lazy river: A boards; B's river should show an extra tube with the remote avatar sitting on it.
+  const tubesBefore = await B.evaluate(() => { let n = 0; window.__game.rides.find((r) => r.id === 'lazyriver').group.traverse((o) => { if (o.isMesh) n++; }); return n; });
+  await board(A, 'lazyriver');
+  await peerRideIs(B, 'lazyriver'); await sleep(1200);
+  bp = await peerOf(B); seat0 = await seatWorld(B, 'lazyriver', 0);
+  const river = await B.evaluate(() => { const r = window.__game.rides.find((r) => r.id === 'lazyriver'); const s = r.peerSeat?.(0); let inGroup = false, meshNear = false, n = 0; r.group.traverse((o) => { if (o === s) inGroup = true; if (o.isMesh) n++; }); if (s) { const v = new s.position.constructor(); s.updateWorldMatrix(true, false); v.setFromMatrixPosition(s.matrixWorld); const w = new s.position.constructor(); r.group.traverse((o) => { if (o.isMesh && o.visible) { w.setFromMatrixPosition(o.matrixWorld); if (w.distanceTo(v) < 1.5) meshNear = true; } }); } return { inGroup, meshNear, meshes: n }; });
+  check(bp?.ride === 'lazyriver' && seat0 && dist3(bp.pos, seat0) < 0.5 && river.inGroup, `B's avatar for A sits on B's lazyriver.peerSeat(0) inside ride.group: ${JSON.stringify(bp?.pos)} vs ${JSON.stringify(seat0)}`);
+  check(river.meshNear, `a tube mesh is under the remote rider on B's river (meshes ${tubesBefore} -> ${river.meshes})`);
+  if (await hasOwn(B, 'lazyriver', 'peerSeat')) check(river.meshes > tubesBefore, `lazy river added an extra tube for the peer (meshes ${tubesBefore} -> ${river.meshes})`);
+  else console.log('WARN lazy river still uses the base peerSeat (no extra tube yet) — rides agent pending');
+  await B.evaluate(() => { const g = window.__game, r = g.rides.find((r) => r.id === 'lazyriver'); g.player.teleport(r.station.x, r.station.y, r.station.z, 0); g.player.setCameraMode?.('free'); });
+  await sleep(600);
+  await B.screenshot({ path: 'shots/net-river-peer.png' });
+  console.log('saved shots/net-river-peer.png');
+  await unboard(A);
+  await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
+
+  // Light cycle (drive ride): the remote avatar gets its own bike mesh under its group and uses the transmitted transform.
+  await board(A, 'lightcycle');
+  await peerRideIs(B, 'lightcycle'); await sleep(1200);
+  bp = await peerOf(B);
+  const aPos = await A.evaluate(() => window.__game.player.position.toArray().map((v) => +v.toFixed(2)));
+  check(bp?.ride === 'lightcycle' && bp.slot === -1 && !bp.seated, `B knows A is on the light cycle (drive ride, no seat slot): ${JSON.stringify(bp)}`);
+  check(bp && dist3(bp.pos, aPos) < 2, `drive ride uses the transmitted transform: ${JSON.stringify(bp?.pos)} vs A ${JSON.stringify(aPos)}`);
+  if (await hasOwn(B, 'lightcycle', 'makePeerVehicle')) check(bp?.vehicle && bp.vehicleInGroup, `B's remote group carries a peer vehicle mesh: ${JSON.stringify(bp)}`);
+  else console.log('WARN lightcycle has no makePeerVehicle yet (base returns null) — rides agent pending');
+  await unboard(A);
+  await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
+  bp = await peerOf(B);
+  check(bp && !bp.vehicle && bp.children === 2, `vehicle removed when A gets off (group children ${bp?.children})`);
+
+  // Hand-held item travels with the look (join payload re-sent when the config changes).
+  await A.evaluate(() => { const g = window.__game; if (g.player.setHeld) g.player.setHeld('balloon'); else g.player.config.held = 'balloon'; });
+  await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.avatar.config.held === 'balloon', null, { timeout: 20000, polling: 250 }).catch(() => {});
+  bp = await peerOf(B);
+  check(bp?.held === 'balloon', `B sees A's held item: ${bp?.held}`);
+  // Sitting: the transmitted transform is used with the sit anim.
+  const sat = await A.evaluate(() => { const g = window.__game; if (!g.player.sitAt) return null; g.player.sitAt({ id: 'test-bench', position: g.player.position.clone(), facing: 0 }); return g.player.state; });
+  if (sat === 'sit') {
+    await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.st === 'sit', null, { timeout: 20000, polling: 250 }).catch(() => {});
+    bp = await peerOf(B);
+    check(bp?.st === 'sit', `B sees A sitting: ${JSON.stringify(bp)}`);
+    await A.evaluate(() => window.__game.player.standUp?.());
+  } else console.log('WARN player.sitAt not available yet — sit sync not exercised');
+
   // Lobby card (desktop, while in a room) and the phone layout (no room yet).
   await A.click('.pk-net-btn'); await sleep(300);
   const frozen = await A.evaluate(() => window.__game.player.frozen);

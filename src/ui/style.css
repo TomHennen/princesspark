@@ -50,8 +50,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-f
 .hk-btn.big { min-height: 60px; font-size: 22px; padding: 0 32px; border-radius: 20px; }
 
 /* ---------- HUD ---------- */
-.hk-hud { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity 0.5s ease; }
-.hk-hud.show { opacity: 1; }
+#ui-root > .hk-hud { position: absolute; inset: 0; pointer-events: none; touch-action: none; opacity: 0; transition: opacity 0.5s ease; }
+#ui-root > .hk-hud.show { opacity: 1; }
 .hk-hud > * { pointer-events: auto; }
 .hk-hud-left { position: absolute; left: calc(14px + var(--sal)); top: calc(12px + var(--sat)); display: flex; flex-direction: column; gap: 8px; align-items: flex-start; max-width: min(60vw, 420px); }
 .hk-name-card {
@@ -249,7 +249,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-f
 .hk-help .hk-tip { margin-top: 14px; }
 
 /* ---------- touch controls ---------- */
-.hk-touch { position: absolute; inset: 0; pointer-events: none; }
+/* Everything here is finger-sized (>= 56px), has no hover-only affordance, and opts out of browser gestures. */
+.hk-touch, #ui-root > .hk-touch { position: absolute; inset: 0; pointer-events: none; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }   /* #ui-root > * would otherwise re-enable pointer events on the wrapper */
 .hk-touch > * { pointer-events: auto; touch-action: none; }
 .hk-stick {
   position: absolute; left: calc(26px + var(--sal)); bottom: calc(30px + var(--sab)); width: 150px; height: 150px; border-radius: 50%;
@@ -261,13 +262,21 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-f
   transition: transform 0.08s ease, background 0.1s; display: grid; place-items: center; color: var(--green); font-size: 22px;
 }
 .hk-stick.active .hk-knob { transition: none; background: var(--yellow-2); }
-.hk-tbtns { position: absolute; right: calc(16px + var(--sar)); bottom: calc(26px + var(--sab)); width: 170px; height: 170px; pointer-events: none; }
-.hk-tbtns > button { pointer-events: auto; position: absolute; border-radius: 50%; color: var(--green); font-weight: 900; display: grid; place-items: center; line-height: 1; touch-action: none; }
-.hk-tbtns > button span { font-size: 11px; margin-top: 2px; }
+.hk-tbtns { position: absolute; right: calc(16px + var(--sar)); bottom: calc(26px + var(--sab)); width: 190px; height: 190px; pointer-events: none; }
+.hk-tbtns > button { pointer-events: auto; position: absolute; border-radius: 50%; color: var(--green); font-weight: 900; display: grid; place-items: center; line-height: 1; touch-action: none; -webkit-user-select: none; user-select: none; padding: 0; }
+.hk-tbtns > button span { font-size: 12px; margin-top: 2px; letter-spacing: 0.02em; }
 .hk-tbtns > button:active, .hk-tbtns > button.down { filter: brightness(1.1); transform: scale(0.94); }
-.hk-tbtn-jump { right: 0; bottom: 0; width: 92px; height: 92px; background: var(--yellow); box-shadow: 0 6px 0 #c9a90a, var(--shadow); font-size: 30px; }
-.hk-tbtn-run { right: 104px; bottom: 16px; width: 64px; height: 64px; background: var(--pink); color: #fff; box-shadow: 0 5px 0 #c74b86, var(--shadow-sm); font-size: 22px; }
-.hk-tbtn-exit { right: 0; bottom: 0; width: 92px; height: 92px; background: #fff; color: #c0392b; box-shadow: 0 6px 0 #cfd6dc, var(--shadow); font-size: 28px; }
+.hk-tbtns > .hk-tbtn-jump { right: 0; bottom: 0; width: 92px; height: 92px; background: var(--yellow); box-shadow: 0 6px 0 #c9a90a, var(--shadow); font-size: 30px; }
+.hk-tbtns > .hk-tbtn-run { right: 104px; bottom: 10px; width: 68px; height: 68px; background: var(--pink); color: #fff; box-shadow: 0 5px 0 #c74b86, var(--shadow-sm); font-size: 22px; }
+.hk-tbtns > .hk-tbtn-exit { right: 0; bottom: 0; width: 92px; height: 92px; background: #fff; color: #c0392b; box-shadow: 0 6px 0 #cfd6dc, var(--shadow); font-size: 28px; }
+/* ✦ interact (talk / ride / sit / grab): pops in above JUMP whenever something is in reach */
+/* (these per-button rules are `.hk-tbtns > .x` so they out-rank `.hk-tbtns > button` for colour) */
+.hk-tbtns > .hk-tbtn-act { right: 6px; bottom: 104px; width: 80px; height: 80px; background: var(--green); color: var(--yellow); box-shadow: 0 6px 0 #063d26, var(--shadow), 0 0 0 4px rgba(249, 215, 28, 0.35); font-size: 30px; animation: hk-act-glow 1.4s ease-in-out infinite; }
+.hk-tbtns > .hk-tbtn-act span { color: #fff; }
+@keyframes hk-act-glow { 0%, 100% { box-shadow: 0 6px 0 #063d26, var(--shadow), 0 0 0 4px rgba(249, 215, 28, 0.35); } 50% { box-shadow: 0 6px 0 #063d26, var(--shadow), 0 0 0 10px rgba(249, 215, 28, 0.12); } }
+/* camera mode toggle (same as the V key) */
+.hk-tbtns > .hk-tbtn-cam { right: 118px; bottom: 100px; width: 56px; height: 56px; background: var(--panel); color: var(--ink); box-shadow: 0 4px 0 #cfd6dc, var(--shadow-sm); font-size: 18px; }
+.hk-tbtns > .hk-tbtn-cam span { font-size: 10px; }
 .hk-tbtns > button[hidden] { display: none; }
 .hk-touch-mode .hk-exit { display: none; }
 
@@ -403,7 +412,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-f
   .hk-choose { padding: 22px 14px 12px; }
   .hk-choose .hk-choice { font-size: 16px; }
   .hk-touch-mode .hk-prompt { bottom: calc(200px + var(--sab)); }
-  .hk-touch-mode .hk-toasts { bottom: calc(200px + var(--sab)); max-width: calc(100vw - 28px); }
+  .hk-touch-mode .hk-toasts { bottom: calc(268px + var(--sab)); max-width: calc(100vw - 28px); }   /* stacked above the prompt chip / ✦ button */
   .hk-touch-mode .hk-dialogue { bottom: calc(14px + var(--sab)); }
   .hk-banner { white-space: normal; width: min(90vw, 420px); }
 }
@@ -414,3 +423,44 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-f
 @media (prefers-reduced-motion: reduce) {
   #ui-root * { animation-duration: 0.001s !important; transition-duration: 0.001s !important; }
 }
+
+/* ---------- round 2: weather button, item ✦ button, fade + day title card (quests/ui agent) ---------- */
+.hk-hud-right .hk-weather-btn { font-size: 20px; }
+.hk-touch-mode .hk-hud-right .hk-btn { height: 56px; min-width: 56px; }
+.hk-touch-mode .hk-hud-right .hk-btn.round { width: 56px; height: 56px; font-size: 22px; }
+.hk-touch-mode .hk-hud-right .hk-avatar-btn { min-height: 56px; }
+@media (max-width: 640px) {
+  .hk-touch-mode .hk-hud-right .hk-avatar-btn { width: 56px; }
+  .hk-touch-mode .hk-name-card { max-width: calc(100vw - 300px); box-sizing: border-box; }
+  .hk-touch-mode .hk-name-card { overflow: hidden; max-width: calc(100vw - 290px); padding: 6px 10px; }
+  .hk-touch-mode .hk-name-card .hk-avatar-dot { display: none; }   /* narrow phones: the text needs the room more than the crown */
+  .hk-touch-mode .hk-name-card > div:last-child { min-width: 0; }
+  .hk-touch-mode .hk-name-card .hk-name { max-width: 100%; }
+  .hk-touch-mode .hk-name-card .hk-gems { white-space: nowrap; }
+}
+/* short landscape phones: keep the toasts just above the prompt chip, clear of the objective pill */
+@media (max-height: 480px) and (orientation: landscape) {
+  .hk-touch-mode .hk-toasts { bottom: calc(124px + var(--sab)); max-width: min(360px, 44vw); }
+  .hk-touch-mode .hk-hud-left { max-width: 44vw; }
+  .hk-toast { font-size: 13px; padding: 8px 12px; }
+}
+.hk-item-btn {
+  position: absolute; left: 50%; bottom: calc(96px + var(--sab)); transform: translate(-50%, 20px) scale(0.9);
+  min-height: 52px; padding: 0 22px; font-size: 17px; border-radius: 999px; gap: 10px;
+  opacity: 0; pointer-events: none; transition: transform 0.25s cubic-bezier(.34,1.56,.64,1), opacity 0.2s ease;
+}
+.hk-item-btn.show { opacity: 1; transform: translate(-50%, 0) scale(1); pointer-events: auto; }
+.hk-item-btn .hk-item-ico { font-size: 22px; }
+.hk-touch-mode .hk-item-btn { bottom: calc(200px + var(--sab)); min-height: 56px; font-size: 18px; }
+.hk-hud.riding .hk-item-btn { display: none; }
+.hk-fade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.8s ease; z-index: 50; }
+.hk-fade.show { opacity: 1; pointer-events: auto; }
+.hk-title-card {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(0.85); text-align: center; z-index: 60;
+  color: #fff; opacity: 0; transition: transform 0.45s cubic-bezier(.34,1.56,.64,1), opacity 0.35s ease; pointer-events: none;
+  width: min(90vw, 560px);
+}
+.hk-title-card.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.hk-title-card h1 { margin: 0; font-size: clamp(42px, 9vw, 84px); font-weight: 900; color: var(--yellow); text-shadow: 0 6px 0 #7a6300, 0 10px 30px rgba(0, 0, 0, 0.6); letter-spacing: 1px; }
+.hk-title-card p { margin: 14px 0 0; font-size: clamp(16px, 3vw, 24px); font-weight: 800; color: #fff; text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6); }
+@media (min-width: 641px) { .hk-touch-mode .hk-item-btn { bottom: calc(60px + var(--sab)); } }   /* same slot as the prompt chip (they never show together) */

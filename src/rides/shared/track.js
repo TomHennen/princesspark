@@ -188,6 +188,42 @@ export function addTrackColliders(ride, track, o = {}) {
   return added;
 }
 
+/**
+ * Fit `lines` of text into a cw x ch canvas: shrink the font until the widest line fits
+ * `maxW`, and if a single line would have to shrink below 60% split it into two lines at the
+ * middle-most space. Returns { lines, size }. `font(size)` builds the CSS font string.
+ */
+export function fitText(ctx, text, cw, ch, maxW, font, o = {}) {
+  let lines = Array.isArray(text) ? text.slice() : [String(text)];
+  const sizeFor = (ls) => {
+    let size = Math.floor((o.sizeFactor ?? 1) * ch / (ls.length + 0.6));
+    ctx.font = font(size);
+    const w = Math.max(...ls.map((l) => ctx.measureText(l).width));
+    if (w > maxW) size = Math.floor(size * maxW / w);
+    return size;
+  };
+  let size = sizeFor(lines);
+  if (lines.length === 1 && lines[0].includes(' ')) {
+    const full = Math.floor((o.sizeFactor ?? 1) * ch / 1.6);
+    if (size < full * 0.6) {
+      // split at the space nearest the middle of the string
+      const str = lines[0], mid = str.length / 2;
+      let best = -1, bd = Infinity;
+      for (let i = 0; i < str.length; i++) if (str[i] === ' ' && Math.abs(i - mid) < bd) { bd = Math.abs(i - mid); best = i; }
+      const two = [str.slice(0, best), str.slice(best + 1)];
+      const s2 = sizeFor(two);
+      if (s2 > size) { lines = two; size = s2; }
+    }
+  }
+  ctx.font = font(size);
+  return { lines, size };
+}
+
+/** Material for a text face: never coplanar-fights the board it sits on. */
+export function signMaterial(tex, o = {}) {
+  return new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: o.emissive ?? 0.35, roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+}
+
 /** Canvas-texture text sign (plane + backing board). Group is w x h, facing +Z. */
 export function makeSign(text, o = {}) {
   const w = o.w ?? 8, h = o.h ?? 1.8, bg = o.bg ?? '#1b1b1b', fg = o.fg ?? '#ffcc33', border = o.border ?? '#ffcc33';
@@ -197,19 +233,56 @@ export function makeSign(text, o = {}) {
   x.fillStyle = bg; x.fillRect(0, 0, cw, ch);
   x.strokeStyle = border; x.lineWidth = 14; x.strokeRect(14, 14, cw - 28, ch - 28);
   x.fillStyle = fg; x.textAlign = 'center'; x.textBaseline = 'middle';
-  const lines = Array.isArray(text) ? text : [text];
-  let size = Math.floor(ch / (lines.length + 0.6));
-  x.font = `bold ${size}px Impact, 'Arial Black', sans-serif`;
-  const maxW = Math.max(...lines.map((l) => x.measureText(l).width));
-  if (maxW > cw * 0.9) { size = Math.floor(size * cw * 0.9 / maxW); x.font = `bold ${size}px Impact, 'Arial Black', sans-serif`; }
+  const { lines } = fitText(x, text, cw, ch, cw * 0.88, (sz) => `bold ${sz}px Impact, 'Arial Black', sans-serif`);
   lines.forEach((l, i) => x.fillText(l, cw / 2, ch * (i + 1) / (lines.length + 1)));
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
-  const g = new THREE.Group();
-  const face = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.35, roughness: 0.8 }));
-  face.position.z = 0.06;
+  const g = new THREE.Group(); g.name = 'sign';
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(w, h), signMaterial(tex));
+  face.position.z = 0.115;   // board front is at z 0.06: keep a clear gap so the face never z-fights
   const board = new THREE.Mesh(new THREE.BoxGeometry(w + 0.3, h + 0.3, 0.12), o.boardMat || new THREE.MeshStandardMaterial({ color: o.boardColor ?? 0x3a2a1a, roughness: 0.9 }));
   g.add(board, face);
+  if (o.twoSided) { const back = new THREE.Mesh(new THREE.PlaneGeometry(w, h), face.material); back.position.z = -0.115; back.rotation.y = Math.PI; g.add(back); }
   return g;
+}
+
+/**
+ * Two-sided serif text board: a thin gold-edged box whose front and back faces carry the text
+ * (box UVs read correctly from either side). Text is measured and shrunk / wrapped to fit.
+ * o: { bg, fg, border, edge, padX (canvas px kept clear each side), decorate(ctx, w, h), emissive }
+ */
+export function makeTextBoard(text, w, h, o = {}) {
+  const cw = 1024, ch = Math.max(128, Math.round(cw * h / w));
+  const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = o.bg ?? '#1e6b3c'; ctx.fillRect(0, 0, cw, ch);
+  ctx.strokeStyle = o.border ?? '#d9a63a'; ctx.lineWidth = 18; ctx.strokeRect(14, 14, cw - 28, ch - 28);
+  o.decorate?.(ctx, cw, ch);
+  ctx.fillStyle = o.fg ?? '#f6d44a'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
+  const pad = o.padX ?? 60;
+  const { lines } = fitText(ctx, text, cw, ch, cw - 2 * pad, (sz) => `bold ${sz}px Georgia, "Times New Roman", serif`, { sizeFactor: 0.95 });
+  lines.forEach((l, i) => ctx.fillText(l, cw / 2, ch * (i + 1) / (lines.length + 1) + 4));
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  const edge = new THREE.MeshStandardMaterial({ color: o.edge ?? 0xd9a63a, roughness: 0.5, metalness: 0.3 });
+  const face = signMaterial(tex, { emissive: o.emissive ?? 0.2 });
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.12), [edge, edge, edge, edge, face, face]);
+  m.name = 'sign';
+  return m;
+}
+
+/** One world-space box collider per instance of an InstancedMesh (pillars, posts, tyre stacks). */
+export function addInstanceColliders(ride, im, o = {}) {
+  const pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+  const geo = im.geometry; geo.computeBoundingBox();
+  const bb = geo.boundingBox, size = new THREE.Vector3(), center = new THREE.Vector3();
+  const n = o.count ?? im.count;
+  for (let i = 0; i < n; i++) {
+    im.getMatrixAt(i, _m); _m.decompose(pos, q, sc);
+    bb.getSize(size).multiply(sc); bb.getCenter(center).multiply(sc).add(pos);
+    if (o.minW) { size.x = Math.max(size.x, o.minW); size.z = Math.max(size.z, o.minW); }
+    if (o.height) { center.y = o.height / 2; size.y = o.height; }
+    ride.addBoxCollider(center.clone(), size.clone());
+  }
 }
 
 /** Scrolling stripes/ripples CanvasTexture for water & conveyor belts. */
