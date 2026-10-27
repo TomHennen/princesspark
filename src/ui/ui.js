@@ -5,6 +5,7 @@ import { mountTouchControls } from './touch.js';
 import { applySettings } from '../core/settings.js';
 
 const GEM_TOTAL = 14;
+const KEYS_TOTAL = 5;      // royal keys that open the castle (quests.KEYS_TOTAL)
 // Weather picker entries (ids match core/settings WEATHERS and world.setWeather).
 const WEATHER_OPTIONS = [
   { value: 'sunny', label: '☀️ Sunny', sub: 'classic park day' },
@@ -107,7 +108,7 @@ export class UI {
       <div class="hk-hud-left">
         <div class="hk-name-card">
           <div class="hk-avatar-dot">👑</div>
-          <div><div class="hk-name">Explorer</div><div class="hk-gems">💎 <b>0</b>/${GEM_TOTAL} gems</div></div>
+          <div><div class="hk-name">Explorer</div><div class="hk-stats"><div class="hk-gems">💎 <b>0</b>/${GEM_TOTAL} gems</div><div class="hk-keys" title="Royal keys — one per day you finish every quest. Five open the castle!">🔑 <b>0</b>/${KEYS_TOTAL}</div></div></div>
         </div>
         <div class="hk-objective" hidden><span class="hk-star">★</span><span class="hk-objective-text"></span></div>
       </div>
@@ -121,6 +122,8 @@ export class UI {
     r.appendChild(this.hud);
     this.nameEl = this.hud.querySelector('.hk-name');
     this.gemsEl = this.hud.querySelector('.hk-gems');
+    this.keysEl = this.hud.querySelector('.hk-keys');
+    this.keys = 0;
     this.objectiveEl = this.hud.querySelector('.hk-objective');
     this.objectiveText = this.hud.querySelector('.hk-objective-text');
     this.muteBtn = this.hud.querySelector('.hk-mute-btn');
@@ -179,6 +182,9 @@ export class UI {
     ev.on('weather:change', ({ weather } = {}) => this.renderWeather(weather));
     ev.on('day:change', ({ day } = {}) => { this.helpOpen?.querySelector('.hk-tip')?.replaceWith(this.helpTip()); });
     ev.on('unlock', ({ accessory }) => this.toast(`🎁 New accessory unlocked: ${ACC_NAMES[accessory] || accessory} — ${this.touch ? 'tap Avatar' : 'press C'} to try it on!`, 4200));
+    // round 3: royal keys counter, the log flume's big splash
+    ev.on('keys:change', ({ keys, total } = {}) => this.setKeys(keys, total));
+    ev.on('ride:splash', () => this.wetScreen());
   }
 
   bindKeys() {
@@ -221,6 +227,7 @@ export class UI {
     this.refreshName();
     this.gems = this.game.quests?.gemsFound || 0;
     this.renderGems();
+    this.setKeys(this.game.quests?.royalKeys ?? 0, this.game.quests?.keysTotal ?? KEYS_TOTAL);
     this.muteBtn.textContent = this.game.audio?.muted ? '🔇' : '🔊';
     this.renderWeather();
     this.hud.classList.add('show');
@@ -448,6 +455,86 @@ export class UI {
   /** The house closet calls this (CONTRACT: ui.openDressingRoom). Same thing as the Avatar button / C. */
   openDressingRoom() { return this.openCreator(); }
 
+  /** HUD: 🔑 n/total next to the gem counter (quests emits keys:change; bumps when the count goes up). */
+  setKeys(n = 0, total = KEYS_TOTAL) {
+    n = Math.max(0, Math.floor(Number(n) || 0)); total = Math.max(1, Math.floor(Number(total) || KEYS_TOTAL));
+    const bump = n > this.keys;
+    this.keys = n;
+    this.keysEl.innerHTML = `🔑 <b>${Math.min(n, total)}</b>/${total}`;
+    this.keysEl.classList.toggle('full', n >= total);
+    if (bump) { this.keysEl.classList.remove('bump'); void this.keysEl.offsetWidth; this.keysEl.classList.add('bump'); }
+  }
+
+  /** Log flume splash: water droplets run down the screen for ~1.5 s (CSS only; safe to call repeatedly). */
+  wetScreen(ms = 1500) {
+    const wet = el('div', 'hk-wet');
+    const n = this.touch ? 22 : 34;
+    for (let i = 0; i < n; i++) {
+      const d = el('i');
+      const size = 10 + Math.random() * 26;
+      d.style.left = `${Math.random() * 100}%`;
+      d.style.top = `${-10 + Math.random() * 55}%`;
+      d.style.width = `${size}px`; d.style.height = `${size * (1.3 + Math.random() * 0.8)}px`;
+      d.style.animationDuration = `${0.9 + Math.random() * 0.9}s`;
+      d.style.animationDelay = `${Math.random() * 0.35}s`;
+      d.style.opacity = `${0.45 + Math.random() * 0.4}`;
+      wet.appendChild(d);
+    }
+    this.root.appendChild(wet);
+    void wet.offsetWidth; wet.classList.add('show');
+    setTimeout(() => wet.classList.remove('show'), ms);
+    setTimeout(() => wet.remove(), ms + 500);
+    return wet;
+  }
+
+  /**
+   * Splash Cove changing room: fade out behind a curtain swish, open the Dressing Room with the swimsuit on, fade
+   * back. The swimsuit override stays on while the player is inside the water park; an outfit picked in here is
+   * remembered as the one to change back into on the way out, and colours apply to the swimsuit right away.
+   */
+  async openChangingRoom() {
+    const g = this.game, p = g.player;
+    if (this.menuOpen || this.dialogueOpen || this._chooser || !p || p.state !== 'walk') return null;
+    g.audio?.play('curtain');
+    this.menuOpen = true; this.lock('changing');
+    let cfg = null;
+    try {
+      await this.fade(420);
+      if (p.setOutfitOverride && p.outfitOverride !== 'swimsuit') p.setOutfitOverride('swimsuit');
+      const opening = showAvatarCreator(g, { ...p.config, outfit: 'swimsuit' }, { inGame: true });
+      this.fade(350, 'in');
+      cfg = await opening;
+      await this.fade(350);
+      if (cfg) this.applyCreatorResult(cfg);
+      g.audio?.play('curtain');
+      await this.fade(450, 'in');
+      if (cfg) this.toast('Fresh from the changing room! 🩱', 2600);
+    } finally {
+      this.menuOpen = false; this.unlock('changing');
+    }
+    return cfg;
+  }
+
+  /**
+   * Apply what the Dressing Room returned. With the swimsuit override on (Splash Cove), the swimsuit stays on and
+   * the chosen outfit is stored as the one to change back into (player._savedOutfit); the saved config never
+   * records 'swimsuit' as the real outfit.
+   */
+  applyCreatorResult(cfg) {
+    const p = this.game.player;
+    if (!p || !cfg) return;
+    if (p.outfitOverride === 'swimsuit') {
+      if (cfg.outfit && cfg.outfit !== 'swimsuit') p._savedOutfit = cfg.outfit;
+      const real = p._savedOutfit || (cfg.outfit !== 'swimsuit' ? cfg.outfit : null) || 'casual';
+      p.avatar.setConfig({ ...cfg, outfit: 'swimsuit' });
+      saveAvatarConfig({ ...p.config, outfit: real });
+    } else {
+      p.avatar.setConfig(cfg);
+      saveAvatarConfig(p.config);
+    }
+    this.refreshName();
+  }
+
   // ---------- per-frame ----------
   update(dt, t) {
     if (this.splashEl) {
@@ -533,8 +620,9 @@ export class UI {
     const [p1, p2] = this.game.settings?.princesses || [];
     const total = this.game.world?.gemSpots?.length || GEM_TOTAL;
     const day = this.game.quests?.day || 1;
-    if (day > 1) return el('p', 'hk-tip', `Day ${day}! Finish today's quests (see the ★ objective), then sleep in your bed at the house by the entrance to start Day ${day + 1}.`);
-    return el('p', 'hk-tip', `Find all ${total} Royal Gems, ride every ride, and chat with Princess ${esc(p1?.name || '1')} and Princess ${esc(p2?.name || '2')} to unlock new accessories! Finish every quest, then sleep in your bed to start Day 2.`);
+    const keys = this.game.quests?.royalKeys ?? 0;
+    if (day > 1) return el('p', 'hk-tip', `Day ${day}! Finish today's quests (see the ★ objective) to earn a Royal Key 🔑 (${keys}/${KEYS_TOTAL} — five open the castle), then sleep in your bed at the house by the entrance to start Day ${day + 1}.`);
+    return el('p', 'hk-tip', `Find all ${total} Royal Gems, ride every ride, and chat with Princess ${esc(p1?.name || '1')} and Princess ${esc(p2?.name || '2')} to unlock new accessories! Finish every quest to earn a Royal Key 🔑, then sleep in your bed to start Day 2. Five keys open the castle.`);
   }
   refreshName() { this.nameEl.textContent = this.game.player?.config?.name || 'Explorer'; }
   renderGems(bump = false) {
@@ -591,7 +679,8 @@ export class UI {
         <li><span class="hk-keys"><kbd>E</kbd></span> talk / ride</li>
         <li><span class="hk-keys"><kbd>X</kbd></span> exit a ride</li>
         <li><span class="hk-keys"><kbd>🖱 drag</kbd></span> look around · <kbd>scroll</kbd> zoom</li>
-        <li><span class="hk-keys"><kbd>E</kbd></span> eat / squish what you're holding</li>
+        <li><span class="hk-keys"><kbd>E</kbd></span> eat / squish / bop with what you're holding</li>
+        <li><span class="hk-keys"><kbd>Q</kbd></span> drop what you're holding</li>
         <li><span class="hk-keys"><kbd>C</kbd> <kbd>K</kbd></span> dressing room · weather</li>
         <li><span class="hk-keys"><kbd>M</kbd> <kbd>H</kbd></span> mute · this help</li>`;
       const tc = `
@@ -600,7 +689,8 @@ export class UI {
         <li><span class="hk-keys"><kbd>⚡</kbd></span> hold to run</li>
         <li><span class="hk-keys"><kbd>tap the bubble</kbd></span> talk / ride</li>
         <li><span class="hk-keys"><kbd>✕</kbd></span> exit a ride / stand up</li>
-        <li><span class="hk-keys"><kbd>✦</kbd></span> eat / squish what you're holding</li>
+        <li><span class="hk-keys"><kbd>✦</kbd></span> eat / squish / bop with what you're holding</li>
+        <li><span class="hk-keys"><kbd>🫳 DROP</kbd></span> drop what you're holding</li>
         <li><span class="hk-keys"><kbd>☀️</kbd></span> pick the weather</li>
         <li><span class="hk-keys"><kbd>drag right side</kbd></span> look around</li>`;
       this.helpOpen.innerHTML = `<div class="hk-help"><button class="hk-btn round hk-close">✕</button><h2>How to play</h2><ul>${this.touch ? tc : kb}</ul></div>`;
@@ -620,7 +710,7 @@ export class UI {
     this.menuOpen = true; this.lock('creator');
     try {
       const cfg = await showAvatarCreator(this.game, { ...this.game.player.config }, { inGame: true });
-      if (cfg) { this.game.player.avatar.setConfig(cfg); saveAvatarConfig(this.game.player.config); this.refreshName(); }
+      if (cfg) this.applyCreatorResult(cfg);
     } finally {
       this.menuOpen = false; this.unlock('creator');
     }

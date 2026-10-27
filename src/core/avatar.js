@@ -93,12 +93,17 @@ const HELD_BUILDERS = {
     string.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), top.clone().normalize());
     string.castShadow = false;
     g.add(string);
+    // the balloon body lives in its own pivot at the balloon's centre so squish()/bop() can squash it in place
+    const body = new THREE.Group();
+    body.position.copy(top).add(new THREE.Vector3(0, 0.26, 0));
     const balloon = sphere(0.26, '#ff3b7a', { roughness: 0.2, metalness: 0.1, emissive: '#ff3b7a', emissiveIntensity: 0.12 }, 16, 12);
-    balloon.scale.set(1, 1.15, 1); balloon.position.copy(top).add(new THREE.Vector3(0, 0.26, 0));
-    g.add(balloon);
-    const knot = cyl(0.02, 0.05, 0.07, '#d81b60'); knot.position.copy(top); g.add(knot);
-    const shine = sphere(0.06, '#ffffff', { emissive: '#ffffff', emissiveIntensity: 0.6 }, 8, 6); shine.position.copy(balloon.position).add(new THREE.Vector3(-0.1, 0.12, 0.17)); g.add(shine);
+    balloon.scale.set(1, 1.15, 1);
+    body.add(balloon);
+    const knot = cyl(0.02, 0.05, 0.07, '#d81b60'); knot.position.set(0, -0.26, 0); body.add(knot);
+    const shine = sphere(0.06, '#ffffff', { emissive: '#ffffff', emissiveIntensity: 0.6 }, 8, 6); shine.position.set(-0.1, 0.12, 0.17); body.add(shine);
+    g.add(body);
     g.userData.sway = true;
+    g.userData.squishable = body;
     return g;
   },
   wand() {
@@ -161,18 +166,50 @@ const HELD_BUILDERS = {
   },
 };
 
+// Scale a held item gets in the hand (the balloon is already big).
+const heldBase = (kind) => (kind === 'balloon' ? 1 : 1.25);
+
+/**
+ * The same meshes a hand builder makes, as a free-standing world object: origin at the item's centre (so it can be
+ * dropped, bounced and spun about itself), `scale` = `userData.base` (the hand scale) so callers can animate
+ * `obj.scale.setScalar(obj.userData.base * k)`. userData also carries `kind`, `size` (world-space Vector3 extents),
+ * `radius` (half the largest extent), and the hand builder's flags (`squishable`, `sway`, `spin`, `edible`).
+ * Returns null for 'none' / unknown kinds. Geometry/materials are fresh per call — dispose them when done.
+ */
+export function buildHeldItem(kind) {
+  const builder = HELD_BUILDERS[kind];
+  if (!builder) return null;
+  const inner = builder();
+  const base = heldBase(kind);
+  const bounds = new THREE.Box3().setFromObject(inner, true);
+  const centre = bounds.getCenter(new THREE.Vector3());
+  inner.position.sub(centre);
+  const g = new THREE.Group();
+  g.name = `item:${kind}`;
+  g.add(inner);
+  g.scale.setScalar(base);
+  const size = bounds.getSize(new THREE.Vector3()).multiplyScalar(base);
+  g.userData = { ...inner.userData, kind, base, size, radius: Math.max(size.x, size.y, size.z) / 2, inner };
+  return g;
+}
+
 const _lerp = THREE.MathUtils.lerp;
+const smooth = (x) => { x = THREE.MathUtils.clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+// one-shot effect lengths (seconds of the anim clock `t` passed to setAnim)
+const SQUISH_S = 0.4, EAT_S = 0.6, BOP_S = 0.5, BOPPED_S = 0.6;
 
 // Builds a rig. Root group origin is at the feet. Total height ~2.0 units (2.5 with hats).
-// Returns { group, parts, setAnim(state, t, speed), setConfig(partial), config, height, squish(), eat() }
+// Returns { group, parts, setAnim(state, t, speed), setConfig(partial), config, height, squish(), eat(), bop(), bopped() }
 export function buildAvatar(config = {}) {
   const cfg = { ...DEFAULT_AVATAR, ...config };
   const group = new THREE.Group();
   group.name = `avatar:${cfg.name}`;
   const parts = {};
   let anim = { state: 'idle', t: 0 };
-  // one-shot effects driven by wall-clock time inside setAnim (no per-frame allocations)
-  const fx = { squishStart: -1, eatStart: -1, eatResolve: null };
+  // one-shot effects, timed on the anim clock (`t` of setAnim: player.animTime / game time) so they step
+  // deterministically in the headless harness; a wall-clock safety timeout resolves them if setAnim stops being called
+  const fx = { squishStart: -1, eatStart: -1, eatResolve: null, bopStart: -1, bopResolve: null, boppedStart: -1, boppedResolve: null };
+  const prog = (start, dur) => (start < 0 ? -1 : (anim.t - start) / dur); // < 0 idle, 0..1 running, >= 1 done
   const skirted = () => cfg.outfit === 'dress' || cfg.outfit === 'gown';
 
   function build() {
@@ -449,7 +486,7 @@ export function buildAvatar(config = {}) {
     const builder = HELD_BUILDERS[cfg.held];
     if (!builder) { cfg.held = 'none'; return; }
     const item = builder();
-    item.userData.base = cfg.held === 'balloon' ? 1 : 1.25;
+    item.userData.base = heldBase(cfg.held);
     item.scale.setScalar(item.userData.base);
     hand.add(item);
     parts.held = item;
@@ -499,6 +536,52 @@ export function buildAvatar(config = {}) {
       armR.rotation.z = 2.75 + Math.sin(t * 10) * 0.25;
       torso.position.y = HIP_Y + Math.sin(t * 2) * 0.02;
     }
+    // ---- one-shot overlays on top of the base pose (bop swing, being bopped, eating) ----
+    const held = parts.held;
+    let heldScale = 1, squash = 0, heldFlip = 0;
+    const bp = prog(fx.bopStart, BOP_S);
+    if (bp >= 1) finishBop();
+    else if (bp >= 0) {
+      // wind up (arm over the head, torso twists back), whip forward/down, hold on the target while the item
+      // squashes, then settle back. The held item flips to extend the arm beyond the hand (balloon on its string,
+      // ball/wand in front of the fist) so the thing being swung is what lands on the target.
+      const rest = armR.rotation.x, flipAng = held?.userData.sway ? Math.PI : Math.PI / 2;
+      let armX, twist, lean, flip;
+      if (bp < 0.3) { const k = smooth(bp / 0.3); armX = _lerp(rest, -2.9, k); twist = 0.3 * k; lean = -0.1 * k; flip = k; }
+      else if (bp < 0.5) { const k = smooth((bp - 0.3) / 0.2); armX = _lerp(-2.9, -1.7, k); twist = _lerp(0.3, -0.25, k); lean = _lerp(-0.1, 0.2, k); flip = 1; }
+      else if (bp < 0.72) { armX = -1.7; twist = -0.25; lean = 0.2; flip = 1; squash = Math.sin(((bp - 0.5) / 0.22) * Math.PI); }
+      else { const k = smooth((bp - 0.72) / 0.28); armX = _lerp(-1.7, rest, k); twist = -0.25 * (1 - k); lean = 0.2 * (1 - k); flip = 1 - k; }
+      const amt = Math.min(1, bp / 0.15, (1 - bp) / 0.15); // how far the arm is from its base pose (for the outward swing)
+      armR.rotation.x = armX;
+      armR.rotation.z = _lerp(armR.rotation.z, -0.3, smooth(amt)); // swing a little outward, clear of the head and hair
+      torso.rotation.y = twist; torso.rotation.x += lean;
+      head.rotation.y -= twist * 0.6; // keep the eyes on the target
+      heldFlip = flipAng * flip;
+    }
+    const bq = prog(fx.boppedStart, BOPPED_S);
+    if (bq >= 1) finishBopped();
+    else if (bq >= 0) {
+      // knocked back: lean away, a little hop, head tilts and arms flail while the wobble dies down
+      const w = Math.sin(bq * Math.PI * 3) * (1 - bq);
+      const side = Math.sin(bq * Math.PI * 4) * (1 - bq);
+      torso.rotation.x -= 0.35 * w;
+      torso.rotation.z += 0.18 * side;
+      torso.position.y += 0.1 * Math.sin(Math.PI * Math.min(1, bq * 2));
+      head.rotation.z += 0.4 * w; head.rotation.x -= 0.25 * w;
+      armL.rotation.z -= 0.8 * Math.abs(w); armR.rotation.z += 0.8 * Math.abs(w);
+      legL.rotation.z += 0.08 * Math.abs(w); legR.rotation.z -= 0.08 * Math.abs(w);
+    }
+    const ep = prog(fx.eatStart, EAT_S);
+    if (ep >= 1) finishEat();
+    else if (ep >= 0) {
+      // hand to the mouth (arm up and inward), head tilts down, the item shrinks away mid-bite
+      const k = ep < 0.25 ? ep / 0.25 : ep > 0.75 ? (1 - ep) / 0.25 : 1;
+      armR.rotation.x = _lerp(armR.rotation.x, -2.1, k);
+      armR.rotation.z = _lerp(armR.rotation.z, -0.35, k);
+      head.rotation.x = 0.22 * k;
+      heldScale = ep < 0.3 ? 1 : Math.max(0, 1 - (ep - 0.3) / 0.4);
+    }
+    // ---- attachments follow the final body pose ----
     if (parts.skirtStand) {
       parts.skirtStand.visible = !seated; parts.skirtSit.visible = seated;
       parts.skirtStand.rotation.x = -torso.rotation.x; // the cone stays vertical while the body leans into a run
@@ -516,32 +599,18 @@ export function buildAvatar(config = {}) {
       parts.wingL.rotation.y = -a; parts.wingR.rotation.y = a;
     }
     if (parts.halo) parts.halo.position.y = 1.15 + Math.sin(t * 3) * 0.04;
-    const held = parts.held;
     if (held) {
       const ud = held.userData;
-      held.scale.setScalar(ud.base);
-      if (ud.sway) { held.rotation.z = Math.sin(t * 1.3) * 0.1 - 0.05; held.rotation.x = Math.sin(t * 0.9) * 0.08; }
+      held.scale.setScalar(ud.base * heldScale);
+      held.rotation.set(heldFlip, 0, 0);
+      if (ud.sway && !heldFlip) { held.rotation.z = Math.sin(t * 1.3) * 0.1 - 0.05; held.rotation.x = Math.sin(t * 0.9) * 0.08; }
       if (ud.spin) ud.spin.rotation.y = t * 3;
       const sq = ud.squishable;
       if (sq) {
-        let s = 0;
-        if (fx.squishStart >= 0) {
-          const p = (performance.now() - fx.squishStart) / 400;
-          if (p >= 1) fx.squishStart = -1; else s = Math.sin(p * Math.PI);
-        }
+        let s = squash;
+        const sp = prog(fx.squishStart, SQUISH_S);
+        if (sp >= 1) fx.squishStart = -1; else if (sp >= 0) s = Math.max(s, Math.sin(sp * Math.PI));
         sq.scale.set(1 + s * 0.4, 1 - s * 0.45, 1 + s * 0.4);
-      }
-    }
-    if (fx.eatStart >= 0) {
-      const p = (performance.now() - fx.eatStart) / 600;
-      if (p >= 1) finishEat();
-      else {
-        // hand to the mouth (arm up and inward), head tilts down, the item shrinks away mid-bite
-        const k = p < 0.25 ? p / 0.25 : p > 0.75 ? (1 - p) / 0.25 : 1;
-        armR.rotation.x = _lerp(armR.rotation.x, -2.1, k);
-        armR.rotation.z = _lerp(armR.rotation.z, -0.35, k);
-        head.rotation.x = 0.22 * k;
-        if (held) held.scale.setScalar(held.userData.base * (p < 0.3 ? 1 : Math.max(0, 1 - (p - 0.3) / 0.4)));
       }
     }
   }
@@ -552,21 +621,30 @@ export function buildAvatar(config = {}) {
     if (parts.held) parts.held.scale.setScalar(parts.held.userData.base);
     r?.();
   }
-
-  // Needoh squish: quick squash-and-stretch (~0.4 s). Resolves when done.
-  function squish() {
-    fx.squishStart = performance.now();
-    return new Promise((resolve) => setTimeout(resolve, 420));
-  }
-  // Bite: brings the right hand to the mouth for ~0.6 s while the item shrinks away. The caller then clears `held`.
-  function eat() {
-    if (fx.eatResolve) finishEat();
-    fx.eatStart = performance.now();
+  function finishBop() { fx.bopStart = -1; const r = fx.bopResolve; fx.bopResolve = null; r?.(); }
+  function finishBopped() { fx.boppedStart = -1; const r = fx.boppedResolve; fx.boppedResolve = null; r?.(); }
+  // Start a one-shot: records the anim-clock start, resolves from setAnim when it completes (or from a wall-clock
+  // safety timeout if nobody animates this avatar any more).
+  function oneShot(startKey, resolveKey, finish, seconds) {
+    if (fx[resolveKey]) finish();
+    fx[startKey] = Number.isFinite(anim.t) ? anim.t : 0;
     return new Promise((resolve) => {
-      fx.eatResolve = resolve;
-      setTimeout(() => { if (fx.eatResolve === resolve) finishEat(); }, 700); // safety if setAnim stops being called
+      fx[resolveKey] = resolve;
+      setTimeout(() => { if (fx[resolveKey] === resolve) finish(); }, seconds * 1000 + 300);
     });
   }
+
+  // Needoh / balloon squish: quick squash-and-stretch (~0.4 s). Resolves when done.
+  function squish() {
+    fx.squishStart = Number.isFinite(anim.t) ? anim.t : 0;
+    return new Promise((resolve) => setTimeout(resolve, SQUISH_S * 1000 + 20));
+  }
+  // Bite: brings the right hand to the mouth for ~0.6 s while the item shrinks away. The caller then clears `held`.
+  function eat() { return oneShot('eatStart', 'eatResolve', finishEat, EAT_S); }
+  // Bop: ~0.5 s overhead swing of the right arm with whatever is in hand; the balloon / Needoh squashes at impact.
+  function bop() { return oneShot('bopStart', 'bopResolve', finishBop, BOP_S); }
+  // Bopped: ~0.6 s stagger — lean back, small hop, head tilt, arms flail — for NPCs and players on the receiving end.
+  function bopped() { return oneShot('boppedStart', 'boppedResolve', finishBopped, BOPPED_S); }
 
   function setConfig(next) {
     const keys = Object.keys(next || {});
@@ -580,7 +658,7 @@ export function buildAvatar(config = {}) {
   if (!HELD_ITEMS.includes(cfg.held)) cfg.held = 'none';
   build();
   setAnim('idle', 0);
-  return { group, parts, setAnim, setConfig, squish, eat, config: cfg, get height() { return parts.height; } };
+  return { group, parts, setAnim, setConfig, squish, eat, bop, bopped, config: cfg, get height() { return parts.height; } };
 }
 
 export function loadAvatarConfig() {
@@ -592,4 +670,4 @@ export function saveAvatarConfig(cfg) {
 }
 
 // Debug hook for the headless screenshot harness (tools/screenshot.mjs --eval): lets a page script build avatars without imports.
-if (typeof window !== 'undefined') { window.__buildAvatar = buildAvatar; window.__THREE = THREE; }
+if (typeof window !== 'undefined') { window.__buildAvatar = buildAvatar; window.__buildHeldItem = buildHeldItem; window.__THREE = THREE; }

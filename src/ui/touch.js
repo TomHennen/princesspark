@@ -1,7 +1,7 @@
 // Virtual joystick + action buttons for touch devices. Feeds game.input's virtual axis / buttons.
 // Layout: joystick bottom-left; bottom-right cluster = JUMP, RUN, ✦ (interact: talk / ride / sit — shown when
-// something is in reach), EXIT (rides and seats) and a camera-mode toggle. Visibility follows game.player.state
-// every frame (refresh()), so ui.js only needs to mount us.
+// something is in reach), EXIT (rides and seats), a camera-mode toggle and DROP (shown while holding an item).
+// Visibility follows game.player.state every frame (refresh()), so ui.js only needs to mount us.
 const RADIUS = 60, DEADZONE = 0.12;
 
 export function mountTouchControls(game, root) {
@@ -15,11 +15,12 @@ export function mountTouchControls(game, root) {
       <button class="hk-tbtn-act" aria-label="Interact" hidden>★<span>GO</span></button>
       <button class="hk-tbtn-cam" aria-label="Camera mode">📷<span>CAM</span></button>
       <button class="hk-tbtn-exit" aria-label="Exit" hidden>✕<span>EXIT</span></button>
+      <button class="hk-tbtn-drop" aria-label="Drop item" hidden>🫳<span>DROP</span></button>
     </div>`;
   root.appendChild(wrap);
   const $ = (c) => wrap.querySelector(c);
   const stick = $('.hk-stick'), knob = $('.hk-knob');
-  const jumpBtn = $('.hk-tbtn-jump'), runBtn = $('.hk-tbtn-run'), exitBtn = $('.hk-tbtn-exit'), actBtn = $('.hk-tbtn-act'), camBtn = $('.hk-tbtn-cam');
+  const jumpBtn = $('.hk-tbtn-jump'), runBtn = $('.hk-tbtn-run'), exitBtn = $('.hk-tbtn-exit'), actBtn = $('.hk-tbtn-act'), camBtn = $('.hk-tbtn-cam'), dropBtn = $('.hk-tbtn-drop');
   const actLabel = actBtn.querySelector('span');
   const capture = (el, id) => { try { el.setPointerCapture(id); } catch {} };   // synthetic/odd pointer ids may throw
 
@@ -79,6 +80,8 @@ export function mountTouchControls(game, root) {
     if (p.state === 'sit') p.standUp?.(); else if (p.state === 'riding') p.exitRide(false);
   });
   tap(camBtn, () => { const p = game.player; if (p && !p.frozen) p.toggleCameraMode?.(); });
+  // DROP: a one-shot 'drop' action (quests/items.js reads input.justPressed('drop') in its update)
+  tap(dropBtn, () => { const p = game.player; if (p && !p.frozen) { game.input.pressVirtual('drop'); game.input.releaseVirtual('drop'); } });
   // stop the browser from treating button taps as page gestures (double-tap zoom, long-press menus, scroll)
   wrap.addEventListener('contextmenu', (e) => e.preventDefault());
   wrap.addEventListener('touchstart', (e) => { if (e.target !== wrap) e.preventDefault(); }, { passive: false });
@@ -99,6 +102,8 @@ export function mountTouchControls(game, root) {
     show(jumpBtn, walking);   // seated: EXIT (same slot) stands you up
     show(exitBtn, riding || sitting);
     show(camBtn, !sliding);
+    const held = (game.items || game.quests?.items)?.held;
+    show(dropBtn, walking && !p?.frozen && !!held && held !== 'none');
     const near = walking && !p?.frozen ? p.nearest : null;
     show(actBtn, !!near);
     if (near && near !== lastNearest) {

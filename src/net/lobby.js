@@ -101,7 +101,7 @@ export function createLobby(game, net) {
   function destroy() { hide(); offs.forEach((f) => f()); window.removeEventListener('keydown', onKey, true); btn.remove(); overlay.remove(); style.remove(); }
 
   function render() {
-    const code = net.roomCode, others = net.peers.size;
+    const code = net.roomCode, others = net.peerMap.size;
     // pill button
     btn.className = 'pk-net-btn' + (code ? (net.status === 'error' ? ' error' : others ? ' joined' : ' joined waiting') : '');
     btn.innerHTML = code

@@ -10,7 +10,7 @@
 //   `next` is a DialogueNode, a plain string[] (shorthand for { lines }), a function returning either (built
 //   lazily so trees can loop back to a hub), or null/undefined to end the conversation after this node.
 //   Walk it with walkDialogue() below, or by hand with game.ui.dialogue(lines, { choices }).
-import { ACCESSORY_NAMES, RIDE_IDS, GEM_TOTAL } from '../quests/quests.js';
+import { ACCESSORY_NAMES, RIDE_IDS, GEM_TOTAL, KEYS_TOTAL } from '../quests/quests.js';
 import { DEFAULT_SETTINGS } from '../core/settings.js';
 
 const GEM_WORD = { 12: 'Twelve', 14: 'Fourteen' }[GEM_TOTAL] || String(GEM_TOTAL);
@@ -70,7 +70,8 @@ function ctxFor(npcId, settings, playerName, quests = null) {
   const game = quests?.game;
   const held = game?.player?.config?.held || 'none';
   const weather = game?.world?.weather || s.weather || 'sunny';
-  return { name: playerName || 'Explorer', me, sis, p1, p2, park: s.parkName || DEFAULT_SETTINGS.parkName, held, weather, day: quests?.day || 1 };
+  const keys = Math.max(0, quests?.royalKeys || 0), castleOpen = !!quests?.castleOpen;
+  return { name: playerName || 'Explorer', me, sis, p1, p2, park: s.parkName || DEFAULT_SETTINGS.parkName, held, weather, day: quests?.day || 1, keys, castleOpen, keysLeft: Math.max(0, KEYS_TOTAL - keys) };
 }
 /** Up to one flavour line reacting to what the player holds, else to non-sunny weather (empty array otherwise). */
 function flavour(P, c) {
@@ -126,7 +127,7 @@ const P1 = {
     `Come back and tell me when you find something. I love a good report.`,
   ],
   // choice labels
-  labels: { rides: 'Tell me about the rides', gems: 'Where are the gems hiding?', next: 'What should I do next?', hi: 'Just saying hi!', silly: 'Tell me a royal secret', more: 'Ask something else', bye: 'Bye!' },
+  labels: { rides: 'Tell me about the rides', gems: 'Where are the gems hiding?', next: 'What should I do next?', hi: 'Just saying hi!', silly: 'Tell me a royal secret', keys: 'What are the Royal Keys?', more: 'Ask something else', bye: 'Bye!' },
   hubLine: () => pick([`Of course. What would you like to know?`, `Ask away — I know this park by heart.`, `Happy to help. What's on your mind?`]),
   followLine: () => pick([`Anything else?`, `What else can I help with?`, `More questions? I love questions.`]),
   rides: (c) => node([
@@ -186,9 +187,14 @@ const P1 = {
     'speed-demon': (q, c) => [`Thunder Bikes: three laps to finish. Boost on the straights, ease off before the turns.`, `${c.sis.name} crashes every lap and still finishes. You'll be fine.`],
     'grid-master': (q, c) => [`Grid Riders is ${c.sis.name}'s arena. Collect 10 glowing bits — and don't clip your own light wall.`, `Short, careful turns. Speed comes after you stop crashing.`],
     'thrill-seeker': (q) => [`The coaster wants you three times. You've done ${q.progress('thrill-seeker').progress}.`, `Keep your eyes open on the first drop. That's the whole point of it.`],
-    'royal': () => [`You're so close. One more quest and the Royal Keys are yours.`],
+    'royal': () => [`You're so close. One more quest and today's Royal Key is yours.`],
+    'throne': (q, c) => [`The keep is open! Cross the drawbridge, go through the big door, and sit on a throne.`, `Press E at either throne. The left one's mine, but today it's yours.`],
   },
-  allDone: (c) => [`Everything on today's list is done, ${c.name}. Go home and sleep — your bed is in the little house by the entrance.`, `Tomorrow there'll be a brand new list. I've already written it. Don't peek.`],
+  allDone: (c) => [`Everything on today's list is done, ${c.name}. Go home and sleep — your bed is in the little house by the entrance.`, c.castleOpen ? `Tomorrow there'll be a brand new list. And the castle's open any time now — the thrones are comfy.` : c.keysLeft > 0 ? `Tomorrow there'll be a brand new list, and another Royal Key. ${c.keysLeft} more and the castle opens.` : `Tomorrow there'll be a brand new list. And you have ${KEYS_TOTAL} keys — go open that castle door!`],
+  keys: (c) => c.castleOpen
+    ? [`The Royal Keys opened the castle keep — it's yours now, ${c.name}. The throne room's inside, past the big door.`, `${c.sis.name} keeps sitting on the right-hand throne. It's not more royal. It's just closer to the churros.`]
+    : [`Every day you finish the whole quest list, you earn one Royal Key. You have ${c.keys} of ${KEYS_TOTAL}.`, c.keysLeft > 0 ? `${c.keysLeft} more and the big door on the castle keep unlocks. The throne room's behind it. ${c.sis.name} decorated.` : `You have all ${KEYS_TOTAL}! Go to the castle keep — the big door past the drawbridge — and use your keys.`],
+  bopped: (c) => pick([`Hey! Gentle, ${c.name} — that balloon's a weapon in the right hands.`, `Oof! Okay, you got me. Go bop ${c.sis.name}, she's got it coming.`, `A royal bop. I'll allow it. Once.`]),
   // Day 2+: the morning briefing mentions the day's first quests (titles come from quests, names from settings).
   dayGreet: (c, titles) => [
     pick([`Good morning, ${c.name}! Day ${c.day} at ${c.park}. I've got today's list right here.`, `Day ${c.day}, ${c.name}! ${c.sis.name} woke me up at dawn to write today's quests.`]),
@@ -231,14 +237,15 @@ const P1 = {
   },
   finale: (c) => [
     `${c.name}… you did everything. Every ride, every gem, every quest.`,
-    `By the power of two very agreeable princesses, we grant you the Royal Keys of ${c.park}.`,
+    `By the power of two very agreeable princesses, we grant you your first Royal Key of ${c.park}. 🔑`,
+    `Finish every quest on a day and you earn another. Five keys open the big door on the castle keep.`,
     `That means you're family now. ${c.sis.name}'s already planning your coronation party. There will be churros.`,
-    `Thank you for playing with us. Go show off your outfit — press C and go wild.`,
+    `Tonight, sleep in your bed at the little house by the entrance. Tomorrow's list is already written.`,
   ],
   royalTalk: (c) => [
-    pick([`Keys holder ${c.name}! The park is yours. Mind the flamingos.`, `Everything's unlocked, ${c.name}. Now you just get to play.`]),
+    pick([`Key holder ${c.name}! The park is yours. Mind the flamingos.`, `Everything's unlocked, ${c.name}. Now you just get to play.`]),
     pick([`My favorite spot is the top of the Sunshine Wheel at sunset. Try it.`, `${c.sis.name} still hasn't beaten your Thunder Bikes time. Don't tell her I said that.`]),
-    `Come visit any time. The castle's always open to family.`,
+    c.castleOpen ? `Come visit any time. The castle's open to family.` : `${c.keysLeft} more Royal Keys and the castle's open to family. Sleep in your bed to start the next day.`,
   ],
   rideChoiceLabels: ['Thrill rides!', 'Splash Cove water park', 'Something gentle', 'Back'],
   finaleThanks: 'Thank you!!',
@@ -266,7 +273,7 @@ const P2 = {
     `Okay I gotta go bother the Churro Chef. Later${tail(c.me) || ', bye'}!`,
     `If you crash on Thunder Bikes it still counts. Trust me${tail(c.me)}, I'd know.`,
   ],
-  labels: { rides: 'Tell me about the rides', gems: 'Where are the gems hiding?', next: 'What should I do next?', hi: 'Just saying hi!', silly: "What's your catchphrase?", more: 'Ask something else', bye: 'Bye!' },
+  labels: { rides: 'Tell me about the rides', gems: 'Where are the gems hiding?', next: 'What should I do next?', hi: 'Just saying hi!', silly: "What's your catchphrase?", keys: 'What are the Royal Keys?', more: 'Ask something else', bye: 'Bye!' },
   hubLine: (c) => pick([`${CP(c.me, 'Okay')}. Hit me. What do you wanna know?`, `Questions!! I love questions${tail(c.me)}. Go.`, `Ask me ANYTHING. Except math.`]),
   followLine: (c) => pick([`What else${tail(c.me)}? What else what else?`, `More? Say more. I'm ready.`, `${CP(c.me, 'Okay')} anything else?`]),
   rides: (c) => node([`NINE rides${tail(c.me)}. Okay. Okay okay. What do you want: speed, splash, or chill?`], null),
@@ -319,9 +326,14 @@ const P2 = {
     'speed-demon': (q, c) => [`THUNDER BIKES${tail(c.me)}. Three laps. Hold boost. Lean into turns. Scream a little.`, `Crashing is part of the vibe. Finish the laps${tail(c.me)}.`],
     'grid-master': (q, c) => [`Grid Riders is MY arena${tail(c.me)}. Grab 10 bits. Don't hit your own light wall. I do it constantly.`, `Little turns${tail(c.me)}. Little turns.`],
     'thrill-seeker': (q, c) => [`Coaster three times${tail(c.me)}. You're at ${q.progress('thrill-seeker').progress}. The first drop is UNREAL.`, `Hands up on the drop or it doesn't count. (It counts. But hands up.)`],
-    'royal': (q, c) => [`${LOUD(c.me, 'yesss')}. One more quest and you get the Royal Keys!! I'm so hype right now.`],
+    'royal': (q, c) => [`${LOUD(c.me, 'yesss')}. One more quest and you get today's Royal Key!! I'm so hype right now.`],
+    'throne': (q, c) => [`THE CASTLE IS OPEN${tail(c.me)}!! Go through the big door and SIT ON A THRONE. Press E. Be royal.`, `Take the right one. The left one is ${c.sis.name}'s and she'll know.`],
   },
-  allDone: (c) => [`You did EVERYTHING on today's list${tail(c.me)}. Go home, go to BED. Your house is by the entrance.`, `Tomorrow = new quests. I wrote half of them. The silly half.`],
+  allDone: (c) => [`You did EVERYTHING on today's list${tail(c.me)}. Go home, go to BED. Your house is by the entrance.`, c.castleOpen ? `Tomorrow = new quests. Also the castle's open. Thrones! THRONES${tail(c.me)}!` : c.keysLeft > 0 ? `Tomorrow = new quests AND another Royal Key. ${c.keysLeft} more and the castle door opens${tail(c.me)}!` : `You've got ${KEYS_TOTAL} keys!! GO OPEN THE CASTLE DOOR. Go go go!`],
+  keys: (c) => c.castleOpen
+    ? [`The keys WORKED${tail(c.me)}!! The castle's open! Throne room! Chandeliers! I put up the banners myself.`, `Go sit on a throne. Then sit on the other one. Then come tell me which is comfier. (It's the right one.)`]
+    : [`Royal Keys${tail(c.me)}! Finish ALL the quests in a day = one key. You've got ${c.keys}. Need ${KEYS_TOTAL}.`, c.keysLeft > 0 ? `${c.keysLeft} more and the castle door opens. There's a THRONE ROOM in there. I've seen it. It's SO royal.` : `You have ${KEYS_TOTAL}!! Why are you still here?? Castle! Big door! GO${tail(c.me)}!`],
+  bopped: (c) => pick([`${LOUD(c.me, 'hey')}!! Balloon fight?! Okay. OKAY. You asked for it, ${c.name}.`, `BOP. ${CP(c.me, 'Rude')}. ...Do it again.`, `${c.sis.name}!! ${c.name} bopped me!! ...I liked it.`]),
   dayGreet: (c, titles) => [
     pick([`${LOUD(c.me, 'yesss')}! DAY ${c.day}! ${c.name}! New day, new list, let's GO.`, `Morning ${c.name}!! It's Day ${c.day}${tail(c.me) || '.'} ${c.sis.name} made a list. I made it louder.`]),
     titles.length > 1 ? `Okay okay: ${titles[0]}. And ${titles[1]}. GO.` : titles.length ? `Today: ${titles[0]}${tail(c.me)}!` : `Wait, you already did everything?? ${LOUD(c.me, 'whoa')}.`,
@@ -362,14 +374,14 @@ const P2 = {
   finale: (c) => [
     `${LOUD(c.me, 'yesss')}. ${c.name}. ${LOUD(c.me, 'yesss')}. You did EVERYTHING.`,
     `Every ride, every gem, every quest. ${c.sis.name} says that's never happened before. ${LOUD(c.me, 'wow')}.`,
-    `You get the Royal Keys of ${c.park}!! That's the biggest deal there is${tail(c.me)}.`,
+    `You get a ROYAL KEY of ${c.park}!! 🔑 Finish every quest on a day = another key. FIVE keys = the castle opens${tail(c.me)}!`,
     `I'm throwing you a party. Churros. Thunder Bikes. Flamingos invited. ${CP(c.me, 'Okay')} I'm so hype.`,
-    `Press C and make your outfit as wild as possible. You earned it${tail(c.me)}.`,
+    `Now go SLEEP. Your bed's in the house by the entrance. Tomorrow = Day 2 = MORE${tail(c.me)}.`,
   ],
   royalTalk: (c) => [
-    pick([`Royal Keys ${c.name}! ${CP(c.me, 'Yesss')}! Park's yours!`, `${LOUD(c.me, 'yesss')}. The keys holder returns.`]),
+    pick([`Royal Key ${c.name}! ${CP(c.me, 'Yesss')}! Park's yours!`, `${LOUD(c.me, 'yesss')}. The key holder returns.`]),
     pick([`Race me on Thunder Bikes again${tail(c.me)}. I've been practicing.`, `I put on your wings in the Dressing Room. ${c.sis.name} said that's not how it works. ${CP(c.me, 'Whatever')}.`]),
-    `Love you${tail(c.me)}. Go have fun.`,
+    c.castleOpen ? `Love you${tail(c.me)}. Go sit on a throne.` : `${c.keysLeft} more keys and the castle opens${tail(c.me)}. Go to bed so tomorrow can happen!`,
   ],
   rideChoiceLabels: ['SPEED!!', 'Splash Cove!', 'Chill stuff', 'Back'],
   finaleThanks: 'THANK YOU!!',
@@ -409,6 +421,7 @@ function buildTree(P, quests, c, opening, { finale = false } = {}) {
     if (!q) hint = P.allDone(c);
     else if (P.hints[q.id]) hint = P.hints[q.id](quests, c);
     else if (q.royalDay) hint = P.hints.royal(quests, c);
+    else if (/-throne$/.test(q.id)) hint = P.hints.throne(quests, c);
     else {
       // day 2+ quests carry their own tip; each princess frames it her way
       const { progress, total } = quests.progress(q.id);
@@ -423,7 +436,7 @@ function buildTree(P, quests, c, opening, { finale = false } = {}) {
     { label: L.rides, sub: 'all nine, plus Splash Cove', next: rides },
     { label: L.gems, sub: `${quests.gemsFound}/${quests.gems?.length || 14} found`, next: () => node(P.gems(quests, c), follow().choices) },
     { label: L.next, next: nextStep },
-    { label: L.hi, next: () => node(P.hi(c), [{ label: L.silly, next: () => node(P.silly(c), follow().choices) }, { label: L.bye, next: bye }]) },
+    { label: L.hi, next: () => node(P.hi(c), [{ label: L.keys, sub: `🔑 ${c.keys}/${KEYS_TOTAL}`, next: () => node(P.keys(c), follow().choices) }, { label: L.silly, next: () => node(P.silly(c), follow().choices) }, { label: L.bye, next: bye }]) },
   ]);
   if (finale) return node(opening, [{ label: P.finaleThanks, next: () => node(P.royalTalk(c), hub([P.hubLine(c)]).choices) }, { label: L.bye, next: null }]);
   return hub(opening);
@@ -485,6 +498,16 @@ const AMBIENT = {
     joke: () => pick([[`Why did the gator skip the lazy river?`, `Too slow. He wanted the fast lane. There is no fast lane. He left a review.`], [`What's a lifeguard's favourite ride?`, `The log flume. I'm on duty AND on a ride. Nobody can prove otherwise.`]]),
     safety: () => [`Rule one: walk on the deck. Rule two: see rule one.`, `Rule three: if a flamingo is in the water, the flamingo has right of way.`],
   },
+  // Playground Pal: the spinner attendant (world emits spinner:push:start when the player picks "Get a push!").
+  pal: {
+    open: (q, c) => [
+      pick([`Hey ${c.name}! I run the spinner. Sit on it, press E, and pick a speed.`, `Welcome to the playground, ${c.name}! The spinner's mine. Well, the park's. But I push it.`]),
+      `Gentle is a nice spin. Fast is a real spin. Turbo spins you right OFF — hold on. "Get a push!" is me.`,
+    ],
+    hint: () => [`Pick "Get a push!" and I'll walk over and give it everything. It builds up slow, then you FLY.`, `Land on your feet and it still counts for the playground quest. Land on your face, also counts.`],
+    joke: () => pick([[`Why did the spinner get a promotion?`, `It really knew how to turn things around.`], [`What's a merry-go-round's favourite snack?`, `Anything, as long as it doesn't come back up. …I've seen things.`]]),
+    safety: () => [`Spinner rules: sit down, hold the bars, no standing up mid-spin, and nobody eats a churro first.`, `Turbo and pushes throw you off — that's the fun part. The grass is soft. Mostly.`],
+  },
   // Splash Cove pool lifeguards (ids 'lifeguard-1', 'lifeguard-2'…): safety tips, kid-funny.
   poolguard: {
     open: (q, c) => [
@@ -496,6 +519,21 @@ const AMBIENT = {
     safety: () => [`Pool rules: walk, don't run. Feet first on the slide. Hats off on the wave pool. Smile at the lifeguards.`, `Break one and I whistle. Break two and I whistle LOUDER. There is no three.`],
   },
 };
+// One-liners when the player bops an NPC with a balloon / Needoh (shown as a toast by npcs.js).
+const BOP_LINES = {
+  guide: (c) => pick([`Whoa! Hey, ${c.name}! Bop the rides, not the staff.`, `Ha! Okay, that's one free bop. The second one costs a churro.`]),
+  chef: (c) => pick([`OI! Mind the churros! Bop me again and they go cold.`, `Was that a balloon? I'll allow it. Churro?`]),
+  lifeguard: (c) => pick([`HEY! No horseplay on the deck, ${c.name}!`, `Balloon fights are for the grass. Not my deck.`]),
+  poolguard: (c) => pick([`HEY! No horseplay by the pool, ${c.name}!`, `Whistle time. No bopping on the deck. Walk AND don't bop.`, `I have a whistle and I'm not afraid to use it. No horseplay!`]),
+  pal: (c) => pick([`Oof! Nice swing, ${c.name}. Save it for the spinner.`, `Bop ME? Wait till you're on the spinner. Payback's a push.`]),
+};
+/** Line an NPC says when bopped. Princesses use their own lines (name-free, settings-driven); staff use BOP_LINES. */
+export function getBopLine(npcId, settings, playerName = 'Explorer', item = 'balloon') {
+  if (PRINCESSES[npcId]) { const c = ctxFor(npcId, settings, playerName, null); return PRINCESSES[npcId].bopped(c); }
+  const c = ctxFor('p1', settings, playerName, null);
+  const fn = BOP_LINES[npcId] || (String(npcId).startsWith('lifeguard') ? BOP_LINES.poolguard : null);
+  return fn ? fn(c, item) : `Hey! Watch the ${item}!`;
+}
 export function getAmbientDialogue(npcId, quests, playerName = 'Explorer', settings = quests?.game?.settings) {
   const a = AMBIENT[npcId] || (String(npcId).startsWith('lifeguard') ? AMBIENT.poolguard : null);
   if (!a) return [`Hi, ${playerName}!`];

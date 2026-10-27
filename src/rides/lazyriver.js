@@ -4,8 +4,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { Track, makeSign, makeStripeTexture, addTrackColliders } from './shared/track.js';
-import { MeshBuilder } from '../world/builder.js';
+import { Track, makeSign, makeStripeTexture, addTrackColliders, addPlotFence } from './shared/track.js';
+import { MeshBuilder, bucketInstances, makeLightCuller } from '../world/builder.js';
 
 const LAP = 40, TUBES = 4, SEG = 1.6, SPRAY_N = 28, TORCHES = 8;
 const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _m = new THREE.Matrix4(), _one = new THREE.Vector3(1, 1, 1);
@@ -56,6 +56,10 @@ export class LazyRiver extends Ride {
 
     this.group.updateMatrixWorld(true);
     this.station.copy(this.group.localToWorld(new THREE.Vector3(-10, 0, -30)));
+    this.fxCentre = this.group.localToWorld(new THREE.Vector3(10, 0, 0));   // loop centre (world); the spray/torches sit within ~30 m of it
+    // plot fence round the river (the snack stand west of it is the world's); the north side sits on the promenade
+    // edge with the gap around the station deck, which is entered from its sides
+    addPlotFence(this, { rect: { x0: -19, x1: 35.5, z0: -31, z1: 33.5 }, side: 'N', gap: [-17.5, -2.5], colors: { post: 0xffffff, cap: 0xffd600, rail: 0x3aa8e0 } });
   }
 
   buildChannel(M) {
@@ -67,19 +71,18 @@ export class LazyRiver extends Ride {
       paint(new THREE.BoxGeometry(0.5, 1.5, 1).translate(2.1, -0.45, 0), STONE), paint(new THREE.BoxGeometry(0.5, 1.5, 1).translate(-2.1, -0.45, 0), STONE),
       paint(new THREE.BoxGeometry(0.9, 0.16, 1).translate(2.6, 0.22, 0), SAND), paint(new THREE.BoxGeometry(0.9, 0.16, 1).translate(-2.6, 0.22, 0), SAND),
     ], false);
-    const channel = new THREE.InstancedMesh(unit, M.vc, n);
-    channel.castShadow = true; channel.receiveShadow = true;
-    const water = new THREE.InstancedMesh(new THREE.PlaneGeometry(3.7, 1).rotateX(-Math.PI / 2), M.water, n);
-    water.userData.noOcclude = true;
+    const waterGeo = new THREE.PlaneGeometry(3.7, 1).rotateX(-Math.PI / 2);
+    const channelMats = [], waterMats = [];
     for (let k = 0; k < n; k++) {
       const s = (k + 0.5) * SEG;
       tr.trackAt(s, _p, _q);
-      channel.setMatrixAt(k, _m.compose(_p, _q, _v.set(1, 1, SEG * 1.2)));
-      water.setMatrixAt(k, _m.compose(_v.copy(_p).setY(0.02), _q, _one.set(1, 1, SEG * 1.12)));
+      channelMats.push(new THREE.Matrix4().compose(_p, _q, _v.set(1, 1, SEG * 1.2)));
+      waterMats.push(new THREE.Matrix4().compose(_v.copy(_p).setY(0.02), _q, _one.set(1, 1, SEG * 1.12)));
     }
     _one.set(1, 1, 1);
-    channel.instanceMatrix.needsUpdate = true; water.instanceMatrix.needsUpdate = true;
-    this.group.add(channel, water);
+    // the loop is 60 m across: one InstancedMesh per 30 m cell so the far bank is culled rather than drawn as a whole
+    for (const channel of bucketInstances(unit, M.vc, channelMats, 30)) { channel.castShadow = true; channel.receiveShadow = true; this.group.add(channel); }
+    for (const water of bucketInstances(waterGeo, M.water, waterMats, 30)) { water.userData.noOcclude = true; this.group.add(water); }
   }
 
   buildScenery(M) {
@@ -174,6 +177,7 @@ export class LazyRiver extends Ride {
     this.lamps = new THREE.Mesh(mergeGeometries(lampGeo, false), M.lamp); this.group.add(this.lamps);
     tr.trackAt(tm, _p);
     const light = new THREE.PointLight(0xff8ad8, 12, 14, 1.6); light.position.set(_p.x, 1.8, _p.z); this.group.add(light);
+    this.cullLight = makeLightCuller(this.game, [light]);   // off unless the player is near the tunnel
 
     // signs
     const sign = makeSign(['LAZY LAGOON', 'RIVER'], { w: 6.5, h: 2.0, bg: '#1b5e6b', fg: '#ffe082', border: '#ffe082', boardColor: 0x8d5a2b });
@@ -191,7 +195,7 @@ export class LazyRiver extends Ride {
     this.addBoxCollider(new THREE.Vector3(-15.8, 0.6, -33.2), new THREE.Vector3(0.3, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(-13.4, 0.5, -31.5), new THREE.Vector3(0.3, 1, 5));
     this.addBoxCollider(new THREE.Vector3(-6.6, 0.5, -31.5), new THREE.Vector3(0.3, 1, 5));
-    this.addBoxCollider(new THREE.Vector3(-10, 0.5, -34), new THREE.Vector3(7, 1, 0.5));
+    for (const x of [-7, -13]) this.addBoxCollider(new THREE.Vector3(x, 2, -34), new THREE.Vector3(0.4, 4, 0.4));   // sign posts (the beam is overhead: the deck opens onto the promenade)
   }
 
   makeTube(a, b) {
@@ -227,7 +231,10 @@ export class LazyRiver extends Ride {
     curtain.position.copy(this.fallPos); curtain.rotation.y = this.fallYaw; this.group.add(curtain);
     // spray droplets (instanced) over the two arches + torch flames (instanced emissive)
     this.spray = new THREE.InstancedMesh(new THREE.SphereGeometry(0.11, 5, 4), M.spray, SPRAY_N);
-    this.spray.frustumCulled = false; this.spray.userData.noOcclude = true; this.group.add(this.spray);
+    // the droplets only ever fall under the two arches: a fixed sphere over both culls them properly
+    const [a0, a1] = this.sprayArches.map((a) => a.pos);
+    this.spray.boundingSphere = new THREE.Sphere(a0.clone().add(a1).multiplyScalar(0.5), a0.distanceTo(a1) / 2 + 4);
+    this.spray.userData.noOcclude = true; this.group.add(this.spray);
     this.flames = new THREE.InstancedMesh(new THREE.SphereGeometry(0.22, 6, 5), M.flame, this.torchPos.length);
     this.flames.userData.noOcclude = true; this.group.add(this.flames);
   }
@@ -278,6 +285,11 @@ export class LazyRiver extends Ride {
     this.placeTubes(t);
     this.waterTex.offset.y -= dt * 0.35;
     this.fallTex.offset.y -= dt * 1.6;
+    this.cullLight?.();
+    this.lamps.material.emissiveIntensity = 0.75 + 0.25 * Math.sin(t * 2.2);
+    // spray + torch flicker only while someone is within ~80 m of them (two instance-buffer uploads a frame otherwise)
+    const player = this.game.player;
+    if (player && player.position.distanceTo(this.fxCentre) > 110) return;
     // spray: droplets rain from each arch, cycling every 0.8 s
     const half = SPRAY_N / 2;
     for (let i = 0; i < SPRAY_N; i++) {
@@ -291,7 +303,6 @@ export class LazyRiver extends Ride {
     // torch flicker
     this.torchPos.forEach((p, i) => { const f = 0.85 + 0.25 * Math.sin(t * 9 + i * 2.1) + 0.1 * Math.sin(t * 23 + i); this.flames.setMatrixAt(i, _m.compose(p, _q.identity(), _v.set(f, f * 1.5, f))); });
     this.flames.instanceMatrix.needsUpdate = true;
-    this.lamps.material.emissiveIntensity = 0.75 + 0.25 * Math.sin(t * 2.2);
   }
 }
 const _up = new THREE.Vector3(0, 1, 0);

@@ -4,15 +4,21 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { makeTextBoard } from './shared/track.js';
+import { makeTextBoard, addPlotFence } from './shared/track.js';
 
 const TAU = Math.PI * 2;
 const GREEN = 0x1e6b3c, YELLOW = 0xf6d44a, GOLD = 0xd9a63a, CREAM = 0xfff3dc, WOOD = 0xb5834a;
 const PINK = 0xf48fb1, TEAL = 0x3bb8b0, RED = 0xc43a3f, DARK = 0x2b2420;
 const SPIN = TAU / 12;            // one revolution per 12 s
 const BOB = 0.3;                  // animal bob amplitude
-// the rider's unicorn (index 1) and the horses either side of it, nearest first, for remote riders
-const PEER_ORDER = [2, 0, 3, 11, 4, 10, 5, 9, 6, 8, 7];
+// remote riders take the animals nearest the rider's, alternating sides (offsets from the rider's index)
+const PEER_OFFSETS = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6];
+// animal roster (index = position round the deck): kind + name, used by the seat menu
+const ANIMALS = [
+  ['🐴', 'Snowflake'], ['🦄', 'Starlight'], ['🐴', 'Chestnut'], ['🐉', 'Ember'],
+  ['🐴', 'Midnight'], ['🦩', 'Flora'], ['🐴', 'Honey'], ['🦄', 'Moonbeam'],
+  ['🐴', 'Pebble'], ['🐢', 'Shelly'], ['🐴', 'Buttercup'], ['🦄', 'Sparkle'],
+];
 const R_ANIMAL = 5.4, DECK_TOP = 0.5, ANIMAL_BASE_Y = 2.0;
 
 // ---------- tiny procedural-geometry kit ----------
@@ -165,6 +171,9 @@ export class Carousel extends Ride {
     this.cameraOffset.set(0, 1.7, -4.6);
     this.cameraLookOffset.set(0, 1.3, 6);
     this.tagline = 'Hop on a unicorn and go round the royal way';
+    this.menuColor = '#1e6b3c';
+    this.riderIdx = 1;
+    this.spinT = 0;        // accumulated spin time (pauses while a rider picks an animal)
   }
 
   build() {
@@ -285,13 +294,9 @@ export class Carousel extends Ride {
     // or tilts). The carrier lives directly under the ride group, NOT the rotor: the player's camera treats the seat's
     // ancestors as "the vehicle" and never lets them occlude, so parenting to the rotor would let the camera pass
     // through the canopy and the centre column. The unicorn's own bob eases to zero while someone rides it.
-    this.riderAnimal = this.animals[1];
-    const uni = this.riderAnimal.group;
     this.carrier = new THREE.Group(); G.add(this.carrier);
-    this.carrierAngle = (1 / 12) * TAU;
-    this.seat.position.set(0, uni.userData.saddleY - 0.45, -0.5);
     this.carrier.add(this.seat);
-    this.placeCarrier(0);
+    this.chooseSeat('Starlight');
 
     // ---- station (on the +X side, toward the park's central promenade) ----
     const st = new THREE.Group(); st.rotation.y = Math.PI / 2; G.add(st);
@@ -329,20 +334,33 @@ export class Carousel extends Ride {
     const rot = (x, z) => new THREE.Vector3(x, 0, z).applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
     const bc = rot(-5.2, 10.6); this.addBoxCollider(new THREE.Vector3(bc.x, 1.2, bc.z), new THREE.Vector3(2.4, 2.4, 2.4));
     for (const s of [-1, 1]) { const p = rot(s * 2.5, 9.6); this.addBoxCollider(new THREE.Vector3(p.x, 1.7, p.z), new THREE.Vector3(0.5, 3.4, 0.5)); }
+    // plot fence (26 x 26, inset 0.8 so it clears the ticket booth); the gap is the golden arch on the +x side
+    addPlotFence(this, { w: 26, d: 26, inset: 0.8, side: 'E', gap: [-3.5, 3.5], colors: { rail: 0x1e6b3c } });
   }
 
-  onBoard(player) { if (player?.cam) player.cam.yaw = Math.PI; }   // start looking forward over the unicorn's head
+  onBoard(player) { if (player?.cam) player.cam.yaw = Math.PI; }   // start looking forward over the animal's head
 
-  /** Remote rider i sits on the next horse over (nearest to the unicorn first); each bobs with its own animal. */
+  // ---------- seats ----------
+  seatOptions() { return ANIMALS.map(([icon, name]) => ({ id: name, label: `${icon} ${name}`, sub: icon === '🦄' ? 'unicorn' : icon === '🐉' ? 'dragon' : icon === '🦩' ? 'flamingo' : icon === '🐢' ? 'sea turtle' : 'horse' })); }
+  /** Move the rider's carrier to the named animal; remote riders shuffle to the animals nearest it. */
+  chooseSeat(id) {
+    let idx = ANIMALS.findIndex(([, n]) => n === id); if (idx < 0) idx = 1;
+    this.riderIdx = idx;
+    this.riderAnimal = this.animals[idx];
+    this.carrierAngle = (idx / 12) * TAU;
+    this.seat.position.set(0, this.riderAnimal.group.userData.saddleY - 0.45, -0.5);
+    this.placeCarrier(this.spinT * SPIN);
+    this._peerSeats?.forEach((s, i) => s && this.placePeer(s, i));
+  }
+  placePeer(s, i) {
+    const a = this.animals[(this.riderIdx + PEER_OFFSETS[i % PEER_OFFSETS.length] + 12) % 12];
+    s.position.set(0, a.group.userData.saddleY - 0.45, -0.5);
+    a.group.add(s);
+  }
+  /** Remote rider i sits on the next animal over (nearest to the rider's first); each bobs with its own animal. */
   peerSeat(i) {
     this._peerSeats ||= [];
-    if (!this._peerSeats[i]) {
-      const a = this.animals[PEER_ORDER[i % PEER_ORDER.length]];
-      const s = new THREE.Object3D();
-      s.position.set(0, a.group.userData.saddleY - 0.45, -0.5);
-      a.group.add(s);
-      this._peerSeats[i] = s;
-    }
+    if (!this._peerSeats[i]) { const s = new THREE.Object3D(); this.placePeer(s, i); this._peerSeats[i] = s; }
     return this._peerSeats[i];
   }
 
@@ -353,11 +371,13 @@ export class Carousel extends Ride {
   }
 
   update(dt, t) {
-    this.rotor.rotation.y = t * SPIN;
-    this.placeCarrier(t * SPIN);
+    this.spinT += dt;                       // dt is 0 while the rider picks an animal: the deck waits
+    const st = this.spinT;
+    this.rotor.rotation.y = st * SPIN;
+    this.placeCarrier(st * SPIN);
     const ra = this.riderAnimal;
     ra.amp += ((this.riding ? 0 : BOB) - ra.amp) * Math.min(1, dt * 3);
-    for (const a of this.animals) a.group.position.y = a.baseY + Math.sin(t * 2.4 + a.phase) * a.amp;
+    for (const a of this.animals) a.group.position.y = a.baseY + Math.sin(st * 2.4 + a.phase) * a.amp;
     this.bulbMats[0].emissiveIntensity = 1.4 + Math.sin(t * 5.0) * 0.9;
     this.bulbMats[1].emissiveIntensity = 1.4 + Math.sin(t * 5.0 + Math.PI) * 0.9;
     this.flag.rotation.y = Math.sin(t * 3.1) * 0.5;

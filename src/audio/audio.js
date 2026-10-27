@@ -79,6 +79,12 @@ export class GameAudio {
     ev.on('unlock', () => this.play('unlock'));
     ev.on('drive:lap', () => this.play('lap'));
     ev.on('drive:crash', () => this.play('crash'));
+    // round 3: the log flume's big splash, the castle door, dropping / picking up items, bops
+    ev.on('ride:splash', () => this.play('splash'));
+    // (the castle door's creak is played by world/castle.js when the swing starts)
+    ev.on('item:drop', () => this.play('drop'));
+    ev.on('item:pickup', () => this.play('pickup'));
+    ev.on('bop', () => this.play('bop'));
   }
 
   // ---------- mute ----------
@@ -245,6 +251,57 @@ export class GameAudio {
     // Bedtime: a slow, soft lullaby chime
     sleep(t) {
       [76, 72, 69, 64].forEach((n, i) => { this.tone({ t: t + i * 0.32, freq: midi(n), type: 'sine', dur: 0.9, vol: 0.12 }); this.tone({ t: t + i * 0.32, freq: midi(n - 12), type: 'triangle', dur: 0.9, vol: 0.05, filter: 1200 }); });
+    },
+    // Log flume big splash: a big watery crash — low thump, a wide noise burst, then a fizzy sizzle tail
+    splash(t) {
+      this.tone({ t, freq: 110, to: 40, type: 'sine', dur: 0.4, vol: 0.4, a: 0.004 });
+      this.noise({ t, dur: 0.55, vol: 0.45, type: 'lowpass', f0: 2600, f1: 500, q: 0.7, a: 0.008 });
+      this.noise({ t: t + 0.05, dur: 1.4, vol: 0.3, type: 'bandpass', f0: 900, f1: 2800, q: 0.6, a: 0.06 });
+      this.noise({ t: t + 0.3, dur: 1.6, vol: 0.14, type: 'highpass', f0: 3500, f1: 7000, a: 0.2 });
+      for (let i = 0; i < 5; i++) this.tone({ t: t + 0.18 + i * 0.11, freq: 600 + Math.random() * 900, to: 1800 + Math.random() * 1200, type: 'sine', dur: 0.12, vol: 0.05, a: 0.01 });
+    },
+    // Bop: a soft rubbery thwack (short lowpassed noise + a pitch-dropping blip)
+    bop(t) {
+      this.noise({ t, dur: 0.08, vol: 0.3, type: 'lowpass', f0: 1800, f1: 400, a: 0.002 });
+      this.tone({ t, freq: 520, to: 160, type: 'triangle', dur: 0.16, vol: 0.22, a: 0.003 });
+      this.tone({ t: t + 0.03, freq: 240, to: 330, type: 'sine', dur: 0.2, vol: 0.1, a: 0.01 });
+    },
+    // Drop: a little toss whoosh then a soft bounce blip
+    drop(t) {
+      this.noise({ t, dur: 0.18, vol: 0.12, type: 'bandpass', f0: 500, f1: 1800, q: 1.2, a: 0.02 });
+      this.tone({ t: t + 0.22, freq: 300, to: 180, type: 'sine', dur: 0.12, vol: 0.14, a: 0.004 });
+      this.tone({ t: t + 0.42, freq: 260, to: 170, type: 'sine', dur: 0.09, vol: 0.08, a: 0.004 });
+    },
+    // Pick up: a quick upward pop
+    pickup(t) {
+      this.tone({ t, freq: 420, to: 900, type: 'triangle', dur: 0.12, vol: 0.16, a: 0.004 });
+      this.tone({ t: t + 0.08, freq: 1200, type: 'sine', dur: 0.14, vol: 0.08 });
+    },
+    // Castle door: a heavy creak (slow sawtooth wobble) then a deep thud
+    door(t) {
+      const o = this.tone({ t, freq: 90, to: 140, type: 'sawtooth', dur: 1.1, vol: 0.1, a: 0.1, filter: 600, q: 6 });
+      const ctx = this.ctx, lfo = ctx.createOscillator(), lg = ctx.createGain();
+      lfo.frequency.value = 11; lg.gain.value = 14; lfo.connect(lg).connect(o.frequency); lfo.start(t); lfo.stop(t + 1.2);
+      this.noise({ t, dur: 1.1, vol: 0.05, type: 'bandpass', f0: 700, f1: 1400, q: 5, a: 0.1 });
+      this.tone({ t: t + 1.15, freq: 80, to: 30, type: 'sine', dur: 0.5, vol: 0.5, a: 0.004 });
+      this.noise({ t: t + 1.15, dur: 0.3, vol: 0.25, type: 'lowpass', f0: 500, f1: 120, a: 0.004 });
+    },
+    // Fanfare: a short triumphant brass-ish arpeggio (sawtooth through a lowpass, doubled an octave down)
+    fanfare(t) {
+      const seq = [[60, 0, 0.14], [64, 0.14, 0.14], [67, 0.28, 0.14], [72, 0.42, 0.5], [67, 0.72, 0.12], [72, 0.84, 0.9]];
+      for (const [n, dt, d] of seq) {
+        this.tone({ t: t + dt, freq: midi(n + 12), type: 'sawtooth', dur: d, vol: 0.11, a: 0.02, filter: 2200, q: 1.5 });
+        this.tone({ t: t + dt, freq: midi(n + 12) * 1.004, type: 'square', dur: d, vol: 0.05, a: 0.02, filter: 1600 });
+        this.tone({ t: t + dt, freq: midi(n), type: 'triangle', dur: d, vol: 0.1, a: 0.02 });
+      }
+      this.tone({ t: t + 0.84, freq: midi(76), type: 'sine', dur: 0.9, vol: 0.06, a: 0.05 });
+      this.noise({ t: t + 0.84, dur: 0.7, vol: 0.05, type: 'highpass', f0: 5000, a: 0.05 });
+    },
+    // Changing-room curtain: a fabric swish (bandpass noise sweeping up then down) with a little ring clink
+    curtain(t) {
+      this.noise({ t, dur: 0.35, vol: 0.2, type: 'bandpass', f0: 600, f1: 2400, q: 1.5, a: 0.05 });
+      this.noise({ t: t + 0.3, dur: 0.35, vol: 0.16, type: 'bandpass', f0: 2400, f1: 500, q: 1.5, a: 0.05 });
+      for (let i = 0; i < 4; i++) this.tone({ t: t + 0.05 + i * 0.07, freq: 3200 + Math.random() * 1500, type: 'sine', dur: 0.06, vol: 0.04, a: 0.003 });
     },
   };
 

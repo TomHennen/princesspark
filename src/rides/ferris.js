@@ -4,11 +4,14 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { makeTextBoard } from './shared/track.js';
+import { makeTextBoard, addPlotFence } from './shared/track.js';
 
 const TAU = Math.PI * 2;
 const GREEN = 0x1e6b3c, YELLOW = 0xf6d44a, PINK = 0xf48fb1, GOLD = 0xd9a63a, CREAM = 0xfff3dc, WHITE = 0xfafafa, STEEL = 0x2a5a3a;
-const R = 10.5, HUB_Y = 14.6, N = 12, HALF_W = 0.7;
+const R = 10.5, HUB_Y = 14.6, N = 12;
+const GONDOLA_R = 1.3;                 // widest part of a gondola (roof cone)
+const HALF_W = GONDOLA_R + 0.45;       // twin rims / spokes sit this far either side of the gondola plane: never through a tub
+const FRAME_Z = HALF_W + 1.05;         // the A-frames stand outside the rims
 const OMEGA = TAU / 40;                // one revolution per 40 s
 const GONDOLA_FLOOR = -3.47;           // gondola floor height relative to its rim mount
 
@@ -76,6 +79,8 @@ export class FerrisWheel extends Ride {
     this.cameraLookOffset.set(0, 1.3, 10);
     this.tagline = 'Rise up slow and see the whole kingdom';
     this.angle = 0;
+    this.menuColor = '#1e6b3c';
+    this.bench = 'window';
   }
 
   build() {
@@ -85,7 +90,7 @@ export class FerrisWheel extends Ride {
     // S = solid pieces (occlude the camera), T = thin struts / rails (never do)
     const S = [], T = [];
     const legLen = Math.hypot(4.6, HUB_Y), legTilt = Math.atan2(4.6, HUB_Y);
-    for (const z of [-1.9, 1.9]) {
+    for (const z of [-FRAME_Z, FRAME_Z]) {
       for (const s of [-1, 1]) {
         T.push(piece(box(0.55, legLen, 0.55), STEEL, [s * 2.3, HUB_Y / 2, z], [0, 0, s * legTilt]));
         S.push(piece(box(1.7, 0.6, 1.7), CREAM, [s * 4.6, 0.3, z]));
@@ -93,7 +98,7 @@ export class FerrisWheel extends Ride {
       T.push(piece(box(6.2, 0.3, 0.3), STEEL, [0, 4.8, z]));
       T.push(piece(box(3.3, 0.3, 0.3), STEEL, [0, 9.6, z]));
     }
-    for (const s of [-1, 1]) T.push(piece(box(0.3, 0.3, 3.8), STEEL, [s * 4.3, 0.95, 0]));   // ground ties
+    for (const s of [-1, 1]) T.push(piece(box(0.3, 0.3, FRAME_Z * 2 + 0.3), STEEL, [s * 4.3, 0.95, 0]));   // ground ties
     // loading platform on the park side (local −Z)
     S.push(piece(box(6.4, 0.6, 3.0), 0xe6d9bd, [0, 0.3, -2.9]));
     S.push(piece(box(6.4, 0.08, 3.0), YELLOW, [0, 0.62, -2.9]));
@@ -113,7 +118,7 @@ export class FerrisWheel extends Ride {
     const struts = fuse(T); struts.castShadow = true; struts.userData.noOcclude = true; G.add(struts);
 
     // axle (gold) through the hub
-    const axle = new THREE.Mesh(cyl(0.3, 0.3, 4.6, 12), new THREE.MeshStandardMaterial({ color: GOLD, roughness: 0.3, metalness: 0.8 }));
+    const axle = new THREE.Mesh(cyl(0.3, 0.3, FRAME_Z * 2 + 1.2, 12), new THREE.MeshStandardMaterial({ color: GOLD, roughness: 0.3, metalness: 0.8 }));
     axle.rotation.x = Math.PI / 2; axle.position.y = HUB_Y; axle.userData.noOcclude = true; G.add(axle);
 
     // ---- wheel (rotates about local Z) ----
@@ -123,7 +128,7 @@ export class FerrisWheel extends Ride {
       piece(tor(R, 0.16, TAU, 8, 72), WHITE, [0, 0, HALF_W]),
       piece(tor(R - 1.2, 0.07, TAU, 6, 72), GOLD, [0, 0, -HALF_W]),
       piece(tor(R - 1.2, 0.07, TAU, 6, 72), GOLD, [0, 0, HALF_W]),
-      piece(cyl(1.6, 1.6, 2.2, 24), GREEN, [0, 0, 0], [Math.PI / 2, 0, 0]),
+      piece(cyl(1.6, 1.6, HALF_W * 2 + 0.5, 24), GREEN, [0, 0, 0], [Math.PI / 2, 0, 0]),
     ], { roughness: 0.5, metalness: 0.2 });
     frame.userData.noOcclude = true; wheel.add(frame);   // rims are thin
     const spokeMat = new THREE.MeshStandardMaterial({ color: WHITE, roughness: 0.5, metalness: 0.2 });
@@ -149,21 +154,21 @@ export class FerrisWheel extends Ride {
       wheel.add(pivot);
       this.gondolas.push({ pivot, a });
     }
-    // default seat in gondola 0 (re-parented on boarding); rider faces local −Z (over the park) from the +Z bench
-    this.seat.position.set(0, GONDOLA_FLOOR, 0.25); this.seat.rotation.y = Math.PI;
-    this.gondolas[0].pivot.add(this.seat);
+    // default seat in gondola 0 (re-parented on boarding), on the window bench facing local −Z (over the park)
     this.seatGondola = 0;
     this._farPeers = [];   // peer seats in the gondolas after the rider's: [{ seat, k }]
+    this.chooseSeat('window');
 
     // ---- sun at the hub (static, smiling toward the park and away) ----
     const sun = new THREE.Group(); sun.position.y = HUB_Y; G.add(sun);
     const sunMat = new THREE.MeshStandardMaterial({ color: 0xffd23f, emissive: 0xffa500, emissiveIntensity: 0.55, roughness: 0.6 });
-    const drum = new THREE.Mesh(cyl(2.3, 2.3, 2.9, 32), sunMat); drum.rotation.x = Math.PI / 2; sun.add(drum);
+    const SUN_D = HALF_W * 2 + 0.9;   // deeper than the hub so both faces show outside it
+    const drum = new THREE.Mesh(cyl(2.3, 2.3, SUN_D, 32), sunMat); drum.rotation.x = Math.PI / 2; sun.add(drum);
     const faceTex = sunFaceTexture();
     const faceMat = new THREE.MeshStandardMaterial({ map: faceTex, emissive: 0xffa500, emissiveMap: faceTex, emissiveIntensity: 0.5, roughness: 0.6 });
     for (const s of [-1, 1]) {
       const face = new THREE.Mesh(new THREE.CircleGeometry(2.3, 32), faceMat);
-      face.position.z = s * 1.46; if (s < 0) face.rotation.y = Math.PI;
+      face.position.z = s * (SUN_D / 2 + 0.01); if (s < 0) face.rotation.y = Math.PI;
       sun.add(face);
     }
     this.rayMat = new THREE.MeshStandardMaterial({ color: 0xffb020, emissive: 0xff8c1a, emissiveIntensity: 0.8, roughness: 0.6 });
@@ -195,7 +200,8 @@ export class FerrisWheel extends Ride {
     G.updateMatrixWorld(true);
     this.station.copy(G.localToWorld(new THREE.Vector3(0, 0, -7.4)));
     this.stationRadius = 4;
-    for (const s of [-1, 1]) this.addBoxCollider(new THREE.Vector3(s * 4.6, 1, 0), new THREE.Vector3(1.8, 2, 5.6));   // A-frame bases
+    for (const s of [-1, 1]) this.addBoxCollider(new THREE.Vector3(s * 4.6, 1, 0), new THREE.Vector3(1.8, 2, FRAME_Z * 2 + 1.8));   // A-frame bases
+    this.addBoxCollider(new THREE.Vector3(0, 0.6, 1.0), new THREE.Vector3(8, 1.2, 4.0));   // under the wheel, behind the platform: the gondolas sweep through here
     this.addBoxCollider(new THREE.Vector3(0, 0.5, -2.9), new THREE.Vector3(6.6, 1, 3.2));                                // platform deck
     this.addBoxCollider(new THREE.Vector3(4.6, 1.2, -5.6), new THREE.Vector3(2, 2.4, 2));                                 // hut
     this.addBoxCollider(new THREE.Vector3(-4.2, 1.6, -6.0), new THREE.Vector3(2.6, 3.2, 0.5));                            // sign
@@ -204,6 +210,25 @@ export class FerrisWheel extends Ride {
       this.addBoxCollider(new THREE.Vector3(s * 3.2, 0.7, -2.9), new THREE.Vector3(0.25, 1.4, 3.2));
       this.addBoxCollider(new THREE.Vector3(s * 2.4, 0.7, -4.4), new THREE.Vector3(1.8, 1.4, 0.25));
     }
+    // plot fence: hugs the wheel (local x = across the park's z); the gap faces the station path on −Z.
+    // Two extra runs join the queue corners to the fence so nobody can slip round the platform under the wheel.
+    addPlotFence(this, { rect: { x0: -13.5, x1: 13.5, z0: -8.6, z1: 6.0 }, side: 'N', gap: [-3.5, 3.5], runs: [[3.2, -4.4, 13.5, -4.4], [-3.2, -4.4, -13.5, -4.4]], colors: { rail: 0x1e6b3c } });
+  }
+
+  // ---------- seats ----------
+  seatOptions() {
+    return [
+      { id: 'window', label: '🌅 Window bench', sub: 'facing out over the park' },
+      { id: 'across', label: '🎡 Across bench', sub: 'facing the big wheel' },
+    ];
+  }
+  /** Both benches are in the rider's gondola: window = +Z bench facing −Z (the park), across = the opposite bench. */
+  chooseSeat(id) {
+    this.bench = id === 'across' ? 'across' : 'window';
+    const z = this.bench === 'window' ? 0.25 : -0.25;
+    this.seat.position.set(0, GONDOLA_FLOOR, z); this.seat.rotation.y = this.bench === 'window' ? Math.PI : 0;
+    this.gondolas[this.seatGondola].pivot.add(this.seat);
+    // near peers are seat-relative so they follow the bench swap automatically; far peers stay in the next gondolas
   }
 
   /**
@@ -232,7 +257,9 @@ export class FerrisWheel extends Ride {
 
   onBoard(player) {
     if (player?.cam) player.cam.yaw = Math.PI;             // orbit camera starts behind the rider, looking over the park
-    // use the gondola nearest the bottom and end the ride when it comes back down after one revolution
+  }
+  onStage() {
+    // use the gondola nearest the bottom (the wheel waits there during the seat pick) and end the ride when it comes back down after one revolution
     let best = null, bestD = Infinity, bestDelta = 0;
     for (const g of this.gondolas) {
       let d = -Math.PI / 2 - (g.a + this.angle);

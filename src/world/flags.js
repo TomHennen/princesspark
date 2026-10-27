@@ -22,8 +22,13 @@ export function buildFlags(world, defs) {
   const geo = mergeGeometries(geoms, false);
   const pos = geo.attributes.position, base = new Float32Array(pos.array), u = Float32Array.from(us);
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.9 }));
-  mesh.name = 'flags'; mesh.castShadow = true; mesh.frustumCulled = false;
+  mesh.name = 'flags'; mesh.castShadow = true;
+  // a fixed bounding sphere (rest positions plus the furthest any vertex sways) instead of frustumCulled = false
+  geo.computeBoundingSphere(); geo.boundingSphere.radius += 0.5;
+  const poles = defs.map((d) => new THREE.Vector3(d.x, d.y, d.z));
   world.animated.push((dt, t) => {
+    const p = world.game?.player?.position;
+    if (p && !poles.some((c) => c.distanceToSquared(p) < 80 * 80)) return;   // nobody near enough to see a flag wave: skip the upload
     const a = pos.array;
     for (let i = 0, v = 0; i < a.length; i += 3, v++) {
       const k = u[v], ph = base[i + 2] * 0.3 + base[i] * 0.2; // per-flag phase from its location

@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { makeTextBoard, addInstanceColliders } from './shared/track.js';
+import { makeTextBoard, addInstanceColliders, addPlotFence } from './shared/track.js';
 
 const TAU = Math.PI * 2;
 const GREEN = 0x1e6b3c, YELLOW = 0xf6d44a, GOLD = 0xd9a63a, CREAM = 0xfff3dc, PINK = 0xf48fb1, WHITE = 0xfafafa;
@@ -20,8 +20,20 @@ export const TEACUP_MODES = {
   turbo:  { label: '⚡ TURBO', sub: 'very, VERY fast', speed: 3.4, cupSpeed: 5.5, ramp: 3.0, duration: 22, hud: '⚡ TURBO!! Hands up if you dare' },
   launch: { label: '🚫 Do NOT press this', sub: 'seriously, don\'t', speed: 6.5, cupSpeed: 11, ramp: 4.0, duration: 999, hud: '🚫 Uh oh. Why did you press it?' },
 };
+// the nine cups, in deck order (sub-platter k holds cups 3k..3k+2): colours + the names the seat menu shows
+export const CUPS = [
+  { id: 'pink', label: '🩷 Pink cup', sub: 'strawberry', colors: [0xffc6d9, 0xc7325e] },
+  { id: 'lemon', label: '💛 Lemon cup', sub: 'lemon sherbet', colors: [0xfff3b0, 0xf28c1c] },
+  { id: 'sky', label: '💙 Sky-blue cup', sub: 'blueberry', colors: [0xcde9ff, 0x2b6fb3] },
+  { id: 'mint', label: '💚 Mint cup', sub: 'mint tea', colors: [0xd8f5c6, 0x2f8f4e] },
+  { id: 'lavender', label: '💜 Lavender cup', sub: 'lavender', colors: [0xe5d4ff, 0x7a4bbf] },
+  { id: 'peach', label: '🧡 Peach cup', sub: 'peach', colors: [0xffe0c2, 0xd1662b] },
+  { id: 'rose', label: '🌸 Rose cup', sub: 'rose & green', colors: [0xffd1e8, 0x1e6b3c] },
+  { id: 'sunny', label: '🌞 Sunny cup', sub: 'yellow & green', colors: [0xf6d44a, 0x1e6b3c] },
+  { id: 'cream', label: '🤍 Cream cup', sub: 'vanilla', colors: [0xffffff, 0xf48fb1] },
+];
 const LAUNCH_AT = 4.0;                                 // seconds of absurd spin-up before the cup "lets go"
-const LAUNCH_UP = 14, LAUNCH_RADIUS = 16.5;            // up m/s (~1.08 s of flight) and the landing distance from the teapot
+const LAUNCH_UP = 14, LAUNCH_RADIUS = 19;              // up m/s (~1.08 s of flight) and the landing distance from the teapot (clears the plot fence corners)
 const FLIGHT_FACTOR = 0.87;                            // horizontal distance per m/s over that flight (player.js damps 0.4/s)
 
 // ---------- tiny procedural-geometry kit ----------
@@ -101,6 +113,8 @@ export class Teacups extends Ride {
     this.modeTime = 0; this.launched = false; this._boardToken = 0; this._launchExit = null;
     this.platterAngle = 0; this.subAngle = 0; this.swing = 0;
     this.hudText = null;
+    this.menuColor = '#f48fb1';
+    this.riderIdx = 0;
   }
 
   build() {
@@ -145,7 +159,7 @@ export class Teacups extends Ride {
 
     // ---- sub-platters and cups ----
     const subColors = [0xbfe8d2, 0xfff0a8, 0xd9c8ff];
-    const cupColors = [[0xffc6d9, 0xc7325e], [0xfff3b0, 0xf28c1c], [0xcde9ff, 0x2b6fb3], [0xd8f5c6, 0x2f8f4e], [0xe5d4ff, 0x7a4bbf], [0xffe0c2, 0xd1662b], [0xffd1e8, 0x1e6b3c], [0xf6d44a, 0x1e6b3c], [0xffffff, 0xf48fb1]];
+    const cupColors = CUPS.map((c) => c.colors);
     this.subs = []; this.cups = [];
     for (let k = 0; k < 3; k++) {
       const a = (k / 3) * TAU;
@@ -162,14 +176,13 @@ export class Teacups extends Ride {
         sub.add(cup);
         const rider = idx === 0;
         this.cups.push({ group: cup, angle: idx * 1.3, base: rider ? 0.9 : 1.4 + (idx % 4) * 0.25, wob: rider ? 0.5 : 0.7, phase: idx * 0.9, freq: 0.5 + (idx % 3) * 0.12 });
-        if (rider) {
-          // The rider sits on a pivot that shares the cup's position but spins on its own gentle schedule,
-          // so the camera (which follows the seat's facing) swings instead of whipping round with the cup.
-          this.seatPivot = new THREE.Group(); this.seatPivot.position.copy(cup.position); sub.add(this.seatPivot);
-          this.seat.position.set(0, 0.3 + CUP_FLOOR, 0); this.seatPivot.add(this.seat);
-        }
       }
     }
+    // The rider sits on a pivot that shares their cup's position but spins on its own gentle schedule,
+    // so the camera (which follows the seat's facing) swings instead of whipping round with the cup.
+    this.seatPivot = new THREE.Group();
+    this.seat.position.set(0, 0.3 + CUP_FLOOR, 0); this.seatPivot.add(this.seat);
+    this.chooseSeat(CUPS[0].id);
 
     // ---- sparks: yellow chips that fly off the rider's cup in Turbo / launch mode (hidden otherwise) ----
     this.sparks = new THREE.InstancedMesh(box(0.14, 0.14, 0.14), new THREE.MeshStandardMaterial({ color: 0xfff1a8, emissive: 0xffd34a, emissiveIntensity: 1.6, roughness: 0.5 }), 14);
@@ -223,23 +236,36 @@ export class Teacups extends Ride {
     this.addBoxCollider(new THREE.Vector3(0, 0.8, 0), new THREE.Vector3(8.4, 1.6, 20));
     this.addBoxCollider(new THREE.Vector3(0, 0.8, 0), new THREE.Vector3(15.4, 1.6, 15.4));
     this.addBoxCollider(new THREE.Vector3(-4.0, 1.5, -11.6), new THREE.Vector3(2.8, 3, 0.5));
+    // plot fence (26 x 26, inset 0.8); the gap is at the sign / station on −Z
+    addPlotFence(this, { w: 26, d: 26, inset: 0.8, side: 'N', gap: [-2.5, 2.5], colors: { rail: 0xf48fb1 } });
   }
 
+  // ---------- seats ----------
+  seatOptions() { return CUPS.map((c) => ({ id: c.id, label: c.label, sub: c.sub })); }
+  /** Move the rider's pivot to the chosen cup (same sub-platter slot); remote riders avoid that cup. */
+  chooseSeat(id) {
+    let idx = CUPS.findIndex((c) => c.id === id); if (idx < 0) idx = 0;
+    this.riderIdx = idx;
+    const cup = this.cups[idx].group;
+    cup.parent.add(this.seatPivot);
+    this.seatPivot.position.copy(cup.position);
+    this._peerSeats?.forEach((s, i) => s && this.placePeer(s, i));
+  }
+  placePeer(s, i) {
+    if (i < 3) {
+      const a = [TAU / 3, -TAU / 3, 0][i];
+      s.position.set(Math.sin(a) * 0.72, 0.3 + CUP_FLOOR, Math.cos(a) * 0.72); s.rotation.y = a + Math.PI;
+      this.seatPivot.add(s);
+    } else {
+      const others = this.cups.filter((_, k) => k !== this.riderIdx);
+      s.position.set(0, 0.3 + CUP_FLOOR, 0); s.rotation.y = 0;
+      others[(i - 3) % others.length].group.add(s);
+    }
+  }
   /** Remote riders 0–2 sit round the rim of the rider's cup facing the middle; 3+ take the other cups (which spin). */
   peerSeat(i) {
     this._peerSeats ||= [];
-    if (!this._peerSeats[i]) {
-      const s = new THREE.Object3D();
-      if (i < 3) {
-        const a = [TAU / 3, -TAU / 3, 0][i];
-        s.position.set(Math.sin(a) * 0.72, 0.3 + CUP_FLOOR, Math.cos(a) * 0.72); s.rotation.y = a + Math.PI;
-        this.seatPivot.add(s);
-      } else {
-        s.position.set(0, 0.3 + CUP_FLOOR, 0);
-        this.cups[1 + (i - 3) % (this.cups.length - 1)].group.add(s);
-      }
-      this._peerSeats[i] = s;
-    }
+    if (!this._peerSeats[i]) { const s = new THREE.Object3D(); this.placePeer(s, i); this._peerSeats[i] = s; }
     return this._peerSeats[i];
   }
 
@@ -343,7 +369,7 @@ export class Teacups extends Ride {
     const pivot = this.seatPivot;
     pivot.rotation.y = -(this.platterAngle + this.subAngle) + this.swing + Math.sin(t * 0.7) * 0.9 * (1 - frantic * 0.5);
     // camera shake: tiny random offsets on the seat pivot in Turbo / launch mode (the camera follows the seat)
-    const riderCup = this.cups[0].group;
+    const riderCup = this.cups[this.riderIdx].group;
     const shake = this.mode === 'turbo' ? 0.045 : this.mode === 'launch' ? 0.03 + Math.min(0.12, this.modeTime * 0.03) : 0;
     pivot.position.set(riderCup.position.x + (Math.random() - 0.5) * shake, riderCup.position.y + (Math.random() - 0.5) * shake * 0.6, riderCup.position.z + (Math.random() - 0.5) * shake);
     // teapot rattles harder and harder in launch mode
@@ -356,14 +382,18 @@ export class Teacups extends Ride {
     if (this.mode === 'launch' && this.riding && !this.launched && this.modeTime >= LAUNCH_AT) this.doLaunch();
 
     // steam puffs rise, drift and swell then fade out — bigger and faster when the ride is going hard
-    const steamRate = 0.3 + frantic * 0.9, steamScale = 1 + frantic * 1.2;
-    for (let i = 0; i < 6; i++) {
-      const life = ((t * steamRate + i / 6) % 1);
-      const s = (0.4 + life * 1.0) * (1 - life * life) * steamScale;
-      _v.set(Math.sin(t * 1.7 + i) * 0.2 + life * 0.5, 0.1 + life * 1.9, Math.cos(t * 1.3 + i * 2) * 0.2);
-      this.steam.setMatrixAt(i, _m.compose(_v, _qi, _s.set(s, s, s)));
+    // (skipped, upload and all, while the player is too far away to see them)
+    const player = this.game.player;
+    if (!player || player.position.distanceTo(_v.setFromMatrixPosition(this.group.matrixWorld)) < 80) {
+      const steamRate = 0.3 + frantic * 0.9, steamScale = 1 + frantic * 1.2;
+      for (let i = 0; i < 6; i++) {
+        const life = ((t * steamRate + i / 6) % 1);
+        const s = (0.4 + life * 1.0) * (1 - life * life) * steamScale;
+        _v.set(Math.sin(t * 1.7 + i) * 0.2 + life * 0.5, 0.1 + life * 1.9, Math.cos(t * 1.3 + i * 2) * 0.2);
+        this.steam.setMatrixAt(i, _m.compose(_v, _qi, _s.set(s, s, s)));
+      }
+      this.steam.instanceMatrix.needsUpdate = true;
     }
-    this.steam.instanceMatrix.needsUpdate = true;
     // sparks off the rider's cup rim in Turbo / launch
     const sparking = (this.mode === 'turbo' || this.mode === 'launch') && this.riding;
     if (sparking || this.sparks.visible) {

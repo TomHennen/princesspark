@@ -1,7 +1,7 @@
 // "Dressing Room": full-screen avatar creator with a live Three.js preview. Resolves with the final config.
 import * as THREE from 'three';
 import { buildAvatar, DEFAULT_AVATAR, HAIR_STYLES, OUTFITS, ACCESSORIES, HELD_ITEMS, SKIN_TONES, HAIR_COLORS, PALETTE } from '../core/avatar.js';
-import { applySettings, sanitizeName as sanitizeSettingName } from '../core/settings.js';
+import { applySettings, sanitizeName as sanitizeSettingName, QUALITIES } from '../core/settings.js';
 
 const BASE_ACCESSORIES = ['none', 'tiara', 'bunnyEars'];
 const HAIR_LABELS = { short: 'Short', long: 'Long', ponytail: 'Ponytail', bun: 'Bun', curly: 'Curly', bob: 'Bob', none: 'None' };
@@ -11,6 +11,7 @@ const HELD_LABELS = {
   none: ['', 'Nothing'], needoh: ['🟢', 'Needoh'], balloon: ['🎈', 'Balloon'], wand: ['🪄', 'Wand'], plushie: ['🦩', 'Flamingo plushie'],
   iceCream: ['🍦', 'Ice cream'], cottonCandy: ['🍭', 'Cotton candy'], pretzel: ['🥨', 'Pretzel'], lemonade: ['🍋', 'Lemonade'],
 };
+const QUALITY_LABELS = { auto: ['✨', 'Auto'], low: ['🐢', 'Low'], medium: ['🙂', 'Medium'], high: ['🚀', 'High'] };
 const ACC_LABELS = {
   none: ['🚫', 'None'], crown: ['👑', 'Crown'], tiara: ['💎', 'Tiara'], wings: ['🦋', 'Wings'], cape: ['🧣', 'Cape'],
   wizardHat: ['🧙', 'Wizard Hat'], bunnyEars: ['🐰', 'Bunny Ears'], sunglasses: ['🕶️', 'Shades'], halo: ['😇', 'Halo'], catEars: ['🐱', 'Cat Ears'],
@@ -80,7 +81,9 @@ export function showAvatarCreator(game, config, { inGame = false } = {}) {
 
   // ---------- 3D preview ----------
   const canvas = wrap.querySelector('canvas');
-  const preview = createPreview(canvas, cfg);
+  const preview = createPreview(canvas, cfg, game?.perf);
+  // once faded in, the dressing room fully covers the park: tell the main loop it can skip rendering it
+  const overlayTimer = setTimeout(() => { if (game && wrap.isConnected) game.overlay = true; }, 450);
 
   // ---------- controls ----------
   const refreshers = [];
@@ -208,6 +211,28 @@ export function showAvatarCreator(game, config, { inGame = false } = {}) {
     setColor(p.color);
   });
   const sP = section('Your princesses'); sP.appendChild(kcards); pKingdom.appendChild(sP);
+  // Graphics quality: applies immediately (game.perf listens to settings:change), so you can see the effect
+  if (game?.perf) {
+    const sQ = section('Graphics quality');
+    const qrow = el('div', 'hk-chips');
+    const qtip = el('p', 'hk-tip');
+    const refreshQ = () => {
+      const q = game.settings?.quality || 'auto';
+      for (const b of qrow.children) b.classList.toggle('sel', b.dataset.v === q);
+      const tier = game.perf.tier;
+      qtip.textContent = q === 'auto'
+        ? `Auto picked ${QUALITY_LABELS[tier]?.[1] || tier} for this device. If the park feels slow, try Low.`
+        : { low: 'No shadows, sharp enough. Best for older tablets and phones.', medium: 'Simple shadows, medium resolution. Good for iPads.', high: 'Soft shadows, full resolution. For computers.' }[q] || '';
+    };
+    for (const q of QUALITIES) {
+      const [ico, txt] = QUALITY_LABELS[q];
+      const b = el('button', 'hk-chip', `<span class="hk-ico">${ico}</span>${txt}`); b.dataset.v = q;
+      b.addEventListener('click', () => { click(); applySettings(game, { quality: q }); refreshQ(); });
+      qrow.appendChild(b);
+    }
+    refreshQ();
+    sQ.appendChild(qrow); sQ.appendChild(qtip); pKingdom.appendChild(sQ);
+  }
   pKingdom.appendChild(el('p', 'hk-tip', 'Saved only in this browser — nothing is sent anywhere.'));
 
   const pages = [['🙂', 'Me', pName], ['👗', 'Outfit', pOutfit], ['👑', 'Extras', pAcc], ['🏰', 'Kingdom', pKingdom]];
@@ -258,6 +283,7 @@ export function showAvatarCreator(game, config, { inGame = false } = {}) {
     let closed = false;
     const close = (result) => {
       if (closed) return; closed = true;
+      clearTimeout(overlayTimer); if (game) game.overlay = false;
       wrap.classList.add('hide'); wrap.classList.remove('show');
       preview.dispose();
       setTimeout(() => wrap.remove(), 380);
@@ -277,10 +303,12 @@ export function showAvatarCreator(game, config, { inGame = false } = {}) {
 }
 
 // Small self-contained Three.js scene showing the avatar, auto-rotating, drag to spin.
-function createPreview(canvas, cfg) {
+// `perf` (game.perf) caps the pixel ratio to the graphics tier; the low tier also skips the preview's spot shadow.
+function createPreview(canvas, cfg, perf = null) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, perf?.cap ?? 2));
+  const shadows = perf?.tier !== 'low';
+  renderer.shadowMap.enabled = shadows; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   const scene = new THREE.Scene();
@@ -289,7 +317,7 @@ function createPreview(canvas, cfg) {
 
   scene.add(new THREE.HemisphereLight(0xfff3e0, 0xd9a6ff, 1.1));
   const spot = new THREE.SpotLight(0xffffff, 60, 30, 0.6, 0.5, 1.6);
-  spot.position.set(2.5, 6, 4); spot.castShadow = true; spot.shadow.mapSize.set(1024, 1024); spot.shadow.bias = -0.0005;
+  spot.position.set(2.5, 6, 4); spot.castShadow = shadows; spot.shadow.mapSize.set(1024, 1024); spot.shadow.bias = -0.0005;
   scene.add(spot); scene.add(spot.target);
   const fill = new THREE.DirectionalLight(0xffe6f5, 0.6); fill.position.set(-3, 2, -2); scene.add(fill);
 

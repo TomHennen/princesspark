@@ -3,9 +3,11 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { Track, buildPillars, makeSign, makeStripeTexture, addTrackColliders, addInstanceColliders } from './shared/track.js';
+import { Track, buildPillars, makeSign, makeStripeTexture, addTrackColliders, addInstanceColliders, addPlotFence } from './shared/track.js';
 
-const G = 9.81, FLOAT = 4.2, CRAWL = 2.6, LIFT = 2.4, LOGS = 3, SPLASH_N = 20;
+const G = 9.81, FLOAT = 4.2, CRAWL = 2.6, LIFT = 2.4, LOGS = 3;
+const SPLASH_N = 110, SPLASH_T = 1.4, SHEETS = 6, RINGS = 3, SHAKE_T = 0.5;   // the big splash: droplets, water curtains, ripple rings, camera shake
+const ROWS = { front: 0.8, middle: -0.3, back: -1.3 };                          // seat z inside a log, per row
 const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _m = new THREE.Matrix4(), _one = new THREE.Vector3(1, 1, 1);
 const mat = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0, ...extra });
 const box = (w, h, d, x, y, z, rot) => {
@@ -24,6 +26,10 @@ export class LogFlume extends Ride {
     this.cameraLookOffset.set(0, 0.8, 7);
     this.stationRadius = 4;
     this.tagline = 'Float the swamp, meet Gus, get soaked.';
+    this.menuColor = '#2f4a1e';
+    this.row = 'middle';
+    this._camBase = this.cameraOffset.clone();   // restored exactly after the splash shake
+    this.shakeT = 0;
   }
 
   build() {
@@ -82,6 +88,37 @@ export class LogFlume extends Ride {
 
     this.group.updateMatrixWorld(true);
     this.station.copy(this.group.localToWorld(new THREE.Vector3(2, 0, 25)));
+    // plot fence (60 x 60, inset 1); the gap spans the queue so its own rails guide riders to the gate at x 3..7
+    addPlotFence(this, { w: 60, d: 60, inset: 1, side: 'S', gap: [-7.5, 11.5], colors: { post: 0xe8dcc0, cap: 0x2f4a1e, rail: 0x7a5230 } });
+  }
+
+  // ---------- seats ----------
+  seatOptions() {
+    return [
+      { id: 'front', label: '🐊 Front row', sub: 'first into the pool' },
+      { id: 'middle', label: '🪵 Middle row', sub: 'cosy in the middle' },
+      { id: 'back', label: '💦 Back row', sub: 'biggest splash' },
+    ];
+  }
+  chooseSeat(id) {
+    this.row = ROWS[id] != null ? id : 'middle';
+    this.seat.position.set(0, 0.25, ROWS[this.row]);
+    this.logs[0].group.add(this.seat);
+    this._peerSeats?.forEach((s, i) => s && this.placePeer(s, i));
+  }
+  /** Remote riders take the other rows of the rider's log (front first), then the rows of the next logs. */
+  placePeer(s, i) {
+    const free = Object.keys(ROWS).filter((r) => r !== this.row);
+    let log, z;
+    if (i < free.length) { log = this.logs[0]; z = ROWS[free[i]]; }
+    else { const j = i - free.length, rows = Object.values(ROWS); log = this.logs[1 + Math.floor(j / rows.length) % (LOGS - 1)]; z = rows[j % rows.length]; }
+    s.position.set(0, 0.25, z);
+    log.group.add(s);
+  }
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) { const s = new THREE.Object3D(); this.placePeer(s, i); this._peerSeats[i] = s; }
+    return this._peerSeats[i];
   }
 
   buildChannel(M) {
@@ -128,20 +165,52 @@ export class LogFlume extends Ride {
     this.addBoxCollider(new THREE.Vector3(-20, 0.3, 18.2), new THREE.Vector3(12.8, 0.6, 0.5));
     this.addBoxCollider(new THREE.Vector3(-26.2, 0.3, 12), new THREE.Vector3(0.5, 0.6, 12.8));
     this.addBoxCollider(new THREE.Vector3(-13.8, 0.3, 12), new THREE.Vector3(0.5, 0.6, 12.8));
+    // the pool and the swamp pond are solid to walkers (too tall to step onto)
+    this.addBoxCollider(new THREE.Vector3(-20, 0.5, 12), new THREE.Vector3(12.8, 1.0, 12.8));
     const pond = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 11), M.pond);
     pond.position.set(-6, 0.05, 6); this.group.add(pond);
-    // splash droplets
-    this.splash = new THREE.InstancedMesh(new THREE.SphereGeometry(0.42, 6, 5), M.splash, SPLASH_N);
-    this.splash.count = 0; this.splash.userData.noOcclude = true;
-    this.splashT = 99;
+    this.addBoxCollider(new THREE.Vector3(-6, 0.5, 6), new THREE.Vector3(14, 1.0, 11));
+    this.buildSplash(M);
+  }
+
+  /** The big splash: a fan of droplets, curtains of water either side of the log, ripple rings on the pool. */
+  buildSplash(M) {
     const r = rng(7);
-    this.splashDirs = [];
-    for (let i = 0; i < SPLASH_N; i++) {
-      const a = r() * Math.PI * 2, sp = 2 + r() * 3.5;
-      this.splashDirs.push(new THREE.Vector3(Math.cos(a) * sp, 4.5 + r() * 4, Math.sin(a) * sp * 0.7 + 3));
-    }
     this.splashOrigin = this.track.trackAt(this.sSplash + 1.5, new THREE.Vector3()).setY(0.6);
+    this.splashT = 99;
+    // droplets: most fan out sideways and ahead, a share flies straight back over the log at the camera
+    this.splash = new THREE.InstancedMesh(new THREE.SphereGeometry(0.3, 6, 5), M.splash, SPLASH_N);
+    this.splash.count = 0; this.splash.visible = false; this.splash.userData.noOcclude = true; this.splash.frustumCulled = false;   // shown only during a burst
+    this.splashDirs = []; this.splashSize = [];
+    for (let i = 0; i < SPLASH_N; i++) {
+      const back = i % 5 === 0;
+      const a = r() * Math.PI * 2, sp = back ? 1 + r() * 2 : 2 + r() * 7;
+      const vz = back ? -(5 + r() * 6) : Math.sin(a) * sp * 0.7 + 2 + r() * 3;
+      this.splashDirs.push(new THREE.Vector3(Math.cos(a) * sp, (back ? 5 : 4) + r() * 7, vz));
+      this.splashSize.push(0.45 + r() * (back ? 1.3 : 0.9));
+    }
     this.group.add(this.splash);
+    // curtains: flattened spheres that shoot up beside / ahead of the log and thin out as they fall
+    M.sheet = new THREE.MeshStandardMaterial({ color: 0xeaf8ff, emissive: 0xbfe9ff, emissiveIntensity: 0.35, transparent: true, opacity: 0.8, depthWrite: false, roughness: 0.3, side: THREE.DoubleSide });
+    this.sheets = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 8), M.sheet, SHEETS);
+    this.sheets.count = 0; this.sheets.visible = false; this.sheets.userData.noOcclude = true; this.sheets.frustumCulled = false;
+    //               x off, z off, width, height, lean (x), delay
+    this.sheetDefs = [[-1.6, 0.5, 2.6, 7.5, -0.35, 0], [1.6, 0.5, 2.6, 7.5, 0.35, 0], [-2.2, 2.5, 2.0, 5.5, -0.5, 0.08], [2.2, 2.5, 2.0, 5.5, 0.5, 0.08], [0, 3.2, 3.2, 4.5, 0, 0.12], [0, -1.8, 2.4, 5.0, 0, 0.05]];
+    this.group.add(this.sheets);
+    // ripple rings spreading across the pool
+    M.ring = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xd8f1ff, emissiveIntensity: 0.5, transparent: true, opacity: 0.7, depthWrite: false, roughness: 0.3 });
+    this.rings = new THREE.InstancedMesh(new THREE.TorusGeometry(1, 0.07, 5, 40).rotateX(Math.PI / 2), M.ring, RINGS);
+    this.rings.count = 0; this.rings.visible = false; this.rings.userData.noOcclude = true; this.rings.frustumCulled = false;
+    this.group.add(this.rings);
+  }
+
+  /** Start the splash burst at the pool. Only the rider's log shakes the camera and emits ride:splash. */
+  startSplash(rider) {
+    this.splashT = 0; this.splash.count = SPLASH_N; this.sheets.count = SHEETS; this.rings.count = RINGS;
+    this.splash.visible = this.sheets.visible = this.rings.visible = true;
+    if (!rider) return;
+    this.shakeT = SHAKE_T;
+    this.game.events?.emit('ride:splash', { ride: this.id, position: this.group.localToWorld(this.splashOrigin.clone()) });
   }
 
   buildStation(M) {
@@ -182,6 +251,7 @@ export class LogFlume extends Ride {
     this.addBoxCollider(new THREE.Vector3(-2, 0.6, 26.9), new THREE.Vector3(10, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(9, 0.6, 26.9), new THREE.Vector3(4, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(-2, 0.6, 28.7), new THREE.Vector3(10, 1.2, 0.3));
+    this.addBoxCollider(new THREE.Vector3(-7, 0.6, 27.8), new THREE.Vector3(0.3, 1.2, 2.1));   // queue end rail
     for (const x of [-7.5, 1.5, 11.5]) for (const z of [19.6, 26.9]) this.addBoxCollider(new THREE.Vector3(x, 2.5, z), new THREE.Vector3(0.5, 5, 0.5));   // roof posts
   }
 
@@ -261,8 +331,7 @@ export class LogFlume extends Ride {
       const s = (k * this.track.length) / LOGS;
       this.logs.push({ group: log, s, v: FLOAT, prevS: s });
     }
-    this.logs[0].group.add(this.seat);
-    this.seat.position.set(0, 0.25, -0.3);
+    this.chooseSeat(this.row);
     // the other logs are vehicles too: never pull the camera in
     for (let k = 1; k < LOGS; k++) this.logs[k].group.traverse((o) => { if (o.isMesh) o.userData.noOcclude = true; });
     this.rider = this.logs[0];
@@ -272,23 +341,8 @@ export class LogFlume extends Ride {
 
   placeLogs() { for (const l of this.logs) this.track.trackAt(l.s, l.group.position, l.group.quaternion); }
 
-  /** Remote riders take the other rows of the rider's log (front, then back), then the rows of the next logs. */
-  peerSeat(i) {
-    this._peerSeats ||= [];
-    if (!this._peerSeats[i]) {
-      const s = new THREE.Object3D();
-      let log, z;
-      if (i < 2) { log = this.logs[0]; z = [0.8, -1.3][i]; }
-      else { const j = i - 2; log = this.logs[1 + Math.floor(j / 3) % (LOGS - 1)]; z = [-0.3, 0.8, -1.3][j % 3]; }
-      s.position.set(0, 0.25, z);
-      log.group.add(s);
-      this._peerSeats[i] = s;
-    }
-    return this._peerSeats[i];
-  }
-
-  onBoard() {
-    // fresh lap: snap the rider's log to the station, keep the other two evenly spaced ahead
+  onStage() {
+    // fresh lap: snap the rider's log to the station (it waits there during the seat pick), the other two evenly spaced ahead
     const L = this.track.length;
     this.logs.forEach((l, k) => { l.s = this.track.wrap(this.sBoard + (k * L) / LOGS); l.v = k === 0 ? CRAWL : FLOAT; l.prevS = l.s; });
     this.lapDist = 0; this.whooshed = false;
@@ -297,6 +351,45 @@ export class LogFlume extends Ride {
 
   isComplete() { return this.riding && this.lapDist >= this.track.length - 0.2; }
 
+  /** Droplets on ballistic arcs, curtains rising then thinning, rings spreading; ~SPLASH_T seconds. */
+  updateSplash(dt) {
+    if (this.shakeT > 0) {
+      // camera shake: jitter the seat-local camera offset, then put it back exactly
+      this.shakeT -= dt;
+      const a = 0.7 * Math.min(1, this.shakeT / SHAKE_T), b = this._camBase;
+      if (this.shakeT <= 0) this.cameraOffset.copy(b);
+      else this.cameraOffset.set(b.x + (Math.random() - 0.5) * a, b.y + (Math.random() - 0.5) * a, b.z + (Math.random() - 0.5) * a * 0.5);
+    }
+    if (this.splashT >= SPLASH_T) return;
+    this.splashT += dt;
+    const k = Math.min(1, this.splashT / SPLASH_T), tt = this.splashT, o = this.splashOrigin;
+    for (let i = 0; i < SPLASH_N; i++) {
+      const d = this.splashDirs[i];
+      _p.set(o.x + d.x * tt, Math.max(0.2, o.y + d.y * tt - 4.9 * tt * tt), o.z + d.z * tt);
+      const sc = Math.max(0.01, this.splashSize[i] * (1 - k * k) * (0.6 + 0.8 * Math.sin(Math.min(1, k * 1.6) * Math.PI)));
+      this.splash.setMatrixAt(i, _m.compose(_p, _q.identity(), _v.set(sc, sc, sc)));
+    }
+    this.splash.instanceMatrix.needsUpdate = true;
+    for (let i = 0; i < SHEETS; i++) {
+      const [ox, oz, w, h, lean, delay] = this.sheetDefs[i];
+      const u = THREE.MathUtils.clamp((k - delay) / (0.75 - delay), 0, 1);
+      const rise = Math.sin(u * Math.PI), sy = Math.max(0.01, h * rise), sx = Math.max(0.01, w * (0.4 + 0.6 * u)), sz = 0.35 + 0.4 * u;
+      _p.set(o.x + ox + lean * sy * 0.5, o.y + sy * 0.5, o.z + oz);
+      _q.setFromAxisAngle(_zAxis, -lean * u);
+      this.sheets.setMatrixAt(i, _m.compose(_p, _q, _v.set(sx, sy, sz)));
+    }
+    this.sheets.instanceMatrix.needsUpdate = true;
+    this.M.sheet.opacity = 0.85 * (1 - k * k);
+    for (let i = 0; i < RINGS; i++) {
+      const u = THREE.MathUtils.clamp((k - i * 0.12) / 0.8, 0, 1), rr = 0.8 + u * (7.5 - i * 1.2);
+      _p.set(o.x, 0.14, o.z + 1.5);
+      this.rings.setMatrixAt(i, _m.compose(_p, _q.identity(), _v.set(rr, 1, rr)));
+    }
+    this.rings.instanceMatrix.needsUpdate = true;
+    this.M.ring.opacity = 0.75 * (1 - k);
+    if (this.splashT >= SPLASH_T) { this.splash.count = 0; this.sheets.count = 0; this.rings.count = 0; this.splash.visible = this.sheets.visible = this.rings.visible = false; }
+  }
+
   update(dt, t) {
     const tr = this.track;
     for (const l of this.logs) {
@@ -304,7 +397,7 @@ export class LogFlume extends Ride {
       l.v = this.speedFn(before, l.v, dt);
       const ds = l.v * dt;
       l.s = tr.wrap(l.s + ds);
-      if (before < this.sSplash && l.s >= this.sSplash) { this.splashT = 0; this.splash.count = SPLASH_N; }
+      if (before < this.sSplash && l.s >= this.sSplash) this.startSplash(l === this.rider && this.riding);
       if (before < this.sDropTop && l.s >= this.sDropTop) this.gator.chomp = 1.6;
       if (l === this.rider && this.riding) {
         this.lapDist += ds;
@@ -315,19 +408,7 @@ export class LogFlume extends Ride {
     // flowing water + conveyor
     this.waterTex.offset.y -= dt * 0.5;
     this.beltTex.offset.y += dt * 1.2;
-    // splash burst (~1 s)
-    if (this.splashT < 1) {
-      this.splashT += dt;
-      const k = this.splashT, o = this.splashOrigin;
-      for (let i = 0; i < SPLASH_N; i++) {
-        const d = this.splashDirs[i];
-        _p.set(o.x + d.x * k, o.y + d.y * k - 4.9 * k * k, o.z + d.z * k);
-        const sc = Math.max(0.01, (1 - k) * (0.7 + 0.6 * Math.sin(k * Math.PI)));
-        this.splash.setMatrixAt(i, _m.compose(_p, _q.identity(), _v.set(sc, sc, sc)));
-      }
-      this.splash.instanceMatrix.needsUpdate = true;
-      if (this.splashT >= 1) this.splash.count = 0;
-    }
+    this.updateSplash(dt);
     // Gus: lazy idle jaw, big chomp when a log goes over the drop
     const gt = this.gator;
     let open = 0.12 + 0.18 * (0.5 + 0.5 * Math.sin(t * 1.1));
@@ -336,3 +417,4 @@ export class LogFlume extends Ride {
     gt.group.position.y = 0.1 + Math.sin(t * 0.8) * 0.06;
   }
 }
+const _zAxis = new THREE.Vector3(0, 0, 1);

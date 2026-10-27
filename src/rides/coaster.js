@@ -3,7 +3,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { Track, buildRails, buildPillars, makeSign, addTrackColliders, addInstanceColliders } from './shared/track.js';
+import { Track, buildRails, buildPillars, makeSign, addTrackColliders, addInstanceColliders, addPlotFence } from './shared/track.js';
+import { makeLightCuller } from '../world/builder.js';
 
 const G = 9.81, EFF = 0.72, VMIN = 4.0, CHAIN = 4.2, CRAWL = 2.6, CAR_GAP = 3.8;
 const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _m = new THREE.Matrix4();
@@ -22,6 +23,8 @@ export class Coaster extends Ride {
     this.cameraLookOffset.set(0, 1.0, 7);
     this.stationRadius = 4;
     this.tagline = 'Chain lift, 23 m drop, a loop and a dragon.';
+    this.menuColor = '#8e1e1e';
+    this.seatCar = 2;      // index into this.cars (0 = front)
   }
 
   build() {
@@ -134,15 +137,44 @@ export class Coaster extends Ride {
     this.buildDragonHead(M);
     this.buildTrain(M);
 
-    // seat lives in the LAST car: the camera behind the rider sees open track, the other cars run ahead in view
-    this.cars[this.cars.length - 1].add(this.seat);
+    // default seat: the LAST car (the camera behind the rider sees the other cars run ahead); see chooseSeat()
     this.seat.position.set(0, 0.55, -0.3);
+    this.chooseSeat('back');
 
     this.s = this.sBoard; this.v = CRAWL; this.lapDist = 0; this.whooshed = false;
     this.placeTrain();
 
     this.group.updateMatrixWorld(true);
     this.station.copy(this.group.localToWorld(new THREE.Vector3(6, 0, 25.5)));
+    // plot fence (70 x 60 footprint, inset 1); the gap spans the whole queue so its own rails do the guiding there
+    addPlotFence(this, { w: 70, d: 60, inset: 1, side: 'S', gap: [-3.5, 15.5], colors: { rail: 0x8e1e1e } });
+  }
+
+  // ---------- seats ----------
+  seatOptions() {
+    return [
+      { id: 'front', label: '🐲 Front car', sub: 'nose first, nothing in the way' },
+      { id: 'middle', label: '🎢 Middle car', sub: 'the smooth seat' },
+      { id: 'back', label: '🔥 Back car', sub: 'whipped over the drop' },
+    ];
+  }
+  chooseSeat(id) {
+    const k = { front: 0, middle: 1, back: 2 }[id] ?? 2;
+    this.seatCar = k;
+    this.cars[k].add(this.seat);
+    this._peerSeats?.forEach((s, i) => s && this.placePeer(s, i));
+  }
+  /** Remote riders fill the other cars first (front-most first), then double up beside someone. */
+  placePeer(s, i) {
+    const n = this.cars.length, others = this.cars.map((_, k) => k).filter((k) => k !== this.seatCar);
+    const k = i < others.length ? others[i] : i % n;
+    s.position.set(i < others.length ? 0 : (i % 2 ? -0.5 : 0.5), 0.55, -0.3);
+    this.cars[k].add(s);
+  }
+  peerSeat(i) {
+    this._peerSeats ||= [];
+    if (!this._peerSeats[i]) { const s = new THREE.Object3D(); this.placePeer(s, i); this._peerSeats[i] = s; }
+    return this._peerSeats[i];
   }
 
   buildStation(M) {
@@ -183,21 +215,9 @@ export class Coaster extends Ride {
     this.addBoxCollider(new THREE.Vector3(1, 0.6, 27.8), new THREE.Vector3(8, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(13, 0.6, 27.8), new THREE.Vector3(4, 1.2, 0.3));
     this.addBoxCollider(new THREE.Vector3(1, 0.6, 29.6), new THREE.Vector3(8, 1.2, 0.3));
+    this.addBoxCollider(new THREE.Vector3(-3, 0.6, 28.7), new THREE.Vector3(0.3, 1.2, 2.1));   // queue end rail
     this.addBoxCollider(new THREE.Vector3(-3.5, 3, 27.5), new THREE.Vector3(0.6, 6, 0.6));   // roof columns
     this.addBoxCollider(new THREE.Vector3(15.5, 3, 27.5), new THREE.Vector3(0.6, 6, 0.6));
-  }
-
-  /** Remote riders fill the cars ahead of the local one (the local seat is in the last car). */
-  peerSeat(i) {
-    this._peerSeats ||= [];
-    if (!this._peerSeats[i]) {
-      const n = this.cars.length, s = new THREE.Object3D();
-      const k = i < n - 1 ? n - 2 - i : i % n;            // cars ahead first, then double up
-      s.position.set(i < n - 1 ? 0 : (i % 2 ? -0.5 : 0.5), 0.55, -0.3);
-      this.cars[k].add(s);
-      this._peerSeats[i] = s;
-    }
-    return this._peerSeats[i];
   }
 
   buildDragonHead(M) {
@@ -251,6 +271,7 @@ export class Coaster extends Ride {
     const light = new THREE.PointLight(0xff6a00, 40, 22, 2);
     light.position.set(cx + 2, (jawTop + skullBot) / 2, 0);
     head.add(light);
+    this.cullLight = makeLightCuller(this.game, [light]);   // the dragon's fire glow only lights the plot while the player is near
     head.userData.parts = parts;
     this.dragonHead = head;
     this.group.add(head);
@@ -303,8 +324,8 @@ export class Coaster extends Ride {
     }
   }
 
-  onBoard() {
-    // fresh lap: snap the train into the station
+  onStage() {
+    // fresh lap: snap the train into the station (it waits there while the rider picks a car)
     this.s = this.sBoard; this.v = CRAWL; this.lapDist = 0; this.whooshed = false;
     this.placeTrain();
   }
@@ -312,6 +333,7 @@ export class Coaster extends Ride {
   isComplete() { return this.riding && this.lapDist >= this.track.length - 0.2; }
 
   update(dt) {
+    this.cullLight?.();
     this.v = this.speedFn(this.track.wrap(this.s), this.v, dt);
     const ds = this.v * dt;
     const before = this.track.wrap(this.s);

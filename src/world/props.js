@@ -2,7 +2,7 @@
 // palms, lamp posts, bunting, bushes and flowers. Static pieces merge into one mesh; repeats are instanced.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { MeshBuilder, C, makeTextSign, paint } from './builder.js';
+import { MeshBuilder, C, makeTextSign, paint, bucketInstances, PARK_CELL } from './builder.js';
 import { PATHS, PLAZA_R, LAGOON, CASTLE, MOAT, BRIDGE, GAZEBO, FOUNTAIN, SOUTH_WALL, WING, southWallZ, terrainY, isClear, onPath, inPlot, inWater, inWing, inReserved } from './layout.js';
 import { buildWaterPark } from './waterpark.js';
 
@@ -12,9 +12,8 @@ export function buildProps(world) {
   ctx.forcedPalms = [];   // hand-placed palm spots (the water park adds its own)
   perimeter(ctx); entrance(ctx); gazebo(ctx); fountain(ctx); bridge(ctx); lookout(ctx); stands(ctx); lagoonLife(ctx); furniture(ctx); beach(ctx);
   layoutLamps(ctx); buntingPoles(ctx);
-  const decor = B.build(world.mat.vc);
-  decor.castShadow = true; decor.receiveShadow = true; decor.name = 'decor';
-  world.group.add(decor);
+  // one merged mesh per park quadrant, so the far side of the park is culled instead of drawn (and shadow-cast) every frame
+  for (const decor of B.buildGrid(world.mat.vc, PARK_CELL)) { decor.castShadow = true; decor.receiveShadow = true; decor.name = 'decor'; world.group.add(decor); }
   buildWaterPark(ctx);   // Splash Cove wing: its own merged mesh + animated bits; pushes palm/lamp spots
   palms(ctx); lamps(ctx); bunting(ctx); greenery(ctx);
 }
@@ -127,9 +126,12 @@ function fountain(ctx) {
   world.addCollider(F.x, 0.5, F.z, 2 * F.r + 0.2, 1.1, 2 * F.r + 0.2);
   // droplets
   const N = 48, drops = new THREE.InstancedMesh(new THREE.SphereGeometry(0.14, 6, 4), new THREE.MeshStandardMaterial({ color: 0xcdf3ff, roughness: 0.3 }), N);
-  drops.frustumCulled = false; world.group.add(drops);
+  const centre = new THREE.Vector3(F.x, 3, F.z);
+  drops.boundingSphere = new THREE.Sphere(centre, 6);   // the arcs never leave the basin: a fixed sphere culls them properly
+  world.group.add(drops);
   const m = new THREE.Matrix4(), T = 1.3, g = 9.8, vy = 4.0, vh = 2.1, y0 = 4.5;
   world.animated.push((dt, t) => {
+    if (world.game?.player?.position.distanceTo(centre) > 80) return;   // too far to see the drops move: skip the upload
     for (let i = 0; i < N; i++) {
       const a = ((i % 12) / 12) * Math.PI * 2 + Math.floor(i / 12) * 0.13, tt = (t * 0.8 + (Math.floor(i / 12) / 4) * T) % T;
       m.makeTranslation(F.x + Math.cos(a) * vh * tt, y0 + vy * tt - 0.5 * g * tt * tt, F.z + Math.sin(a) * vh * tt);
@@ -381,17 +383,16 @@ function palms(ctx) {
   for (let tries = 0; tries < 1500 && spots.length < 90; tries++) put(rng.range(-128, 128), rng.range(-128, 100));
   ctx.palmSpots = spots;
 
-  const mesh = new THREE.InstancedMesh(geo, world.mat.vc, spots.length);
-  mesh.castShadow = true; mesh.name = 'palms';
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
+  const q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), mats = [];
   let colliders = 0;
-  spots.forEach((sp, i) => {
+  spots.forEach((sp) => {
     const sc = rng.range(0.95, 1.3);
     q.setFromAxisAngle(_up, rng.range(0, Math.PI * 2)); s.set(sc, sc, sc); p.set(sp.x, terrainY(sp.x, sp.z) - 0.1, sp.z);
-    mesh.setMatrixAt(i, m.compose(p, q, s));
+    mats.push(new THREE.Matrix4().compose(p, q, s));
     if (onPath(sp.x, sp.z, 5) || inReserved(sp.x, sp.z, 6) || sp.x > 118) { world.addCollider(sp.x, 3, sp.z, 0.9, 7, 0.9); colliders++; }
   });
-  world.group.add(mesh);
+  // one InstancedMesh per park quadrant so palms behind the player are culled instead of drawn park-wide
+  for (const mesh of bucketInstances(geo, world.mat.vc, mats, PARK_CELL)) { mesh.castShadow = true; mesh.name = 'palms'; world.group.add(mesh); }
 }
 
 // ---------------- lamp spots along paths; bunting hangs from separate tall poles midway between lamps ----------------
@@ -439,18 +440,19 @@ function lamps(ctx) {
   L.box(C.green, 0.62, 0.08, 0.62, 0, 4.7, 0); L.cone(C.green, 0.56, 0.42, 0, 5.28, 0, 4, Math.PI / 4); L.sphere(C.yellow, 0.1, 0, 5.76, 0, 6, 4);
   for (const s of [-1, 1]) { L.box(C.green, 0.08, 0.08, 0.5, s * 0.25, 4.78, 0); L.box(C.green, 0.5, 0.08, 0.08, 0, 4.78, s * 0.25); }
   const geo = mergeGeometries(L.geoms, false);
-  const posts = new THREE.InstancedMesh(geo, world.mat.vc, spots.length); posts.castShadow = true; posts.name = 'lamps';
   const glowMat = new THREE.MeshStandardMaterial({ color: 0xffe082, emissive: 0xffc947, emissiveIntensity: 1.3, roughness: 0.4 });
-  const glass = new THREE.InstancedMesh(new THREE.BoxGeometry(0.42, 0.5, 0.42), glowMat, spots.length); glass.name = 'lampGlass';
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3();
-  spots.forEach((sp, i) => {
+  const glassGeo = new THREE.BoxGeometry(0.42, 0.5, 0.42);
+  const q = new THREE.Quaternion(), s = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3(), postMats = [], glassMats = [];
+  spots.forEach((sp) => {
     q.setFromAxisAngle(_up, rng.range(0, Math.PI * 2)); p.set(sp.x, sp.y, sp.z);
-    posts.setMatrixAt(i, m.compose(p, q, s));
-    glass.setMatrixAt(i, m.makeTranslation(sp.x, sp.y + 5.03, sp.z));
+    postMats.push(new THREE.Matrix4().compose(p, q, s));
+    glassMats.push(new THREE.Matrix4().makeTranslation(sp.x, sp.y + 5.03, sp.z));
     world.addCollider(sp.x, sp.y + 2.4, sp.z, 0.5, 4.8, 0.5);
   });
-  world.lampGlowMat = glowMat;   // the weather system brightens the lamp heads at night
-  world.group.add(posts, glass);
+  world.lampGlowMat = glowMat;   // the weather system brightens the lamp heads at night (one material shared by every bucket)
+  // one InstancedMesh per park quadrant (the same partition for posts and heads) so only the quadrants in view are drawn and shadow-cast
+  for (const posts of bucketInstances(geo, world.mat.vc, postMats, PARK_CELL)) { posts.castShadow = true; posts.name = 'lamps'; world.group.add(posts); }
+  for (const glass of bucketInstances(glassGeo, glowMat, glassMats, PARK_CELL)) { glass.name = 'lampGlass'; world.group.add(glass); }
 }
 
 // ---------------- bunting: triangular pennants on sagging ropes ----------------
@@ -504,16 +506,15 @@ function greenery(ctx) {
   for (let tries = 0; tries < 800 && bushes.length < 150; tries++) putBush(rng.range(-128, 128), rng.range(-128, 100));
 
   const bushGeo = new THREE.DodecahedronGeometry(1, 0);
-  const bm = new THREE.InstancedMesh(bushGeo, new THREE.MeshStandardMaterial({ color: 0x2f8f3a, roughness: 1, flatShading: true }), bushes.length);
-  bm.castShadow = true; bm.name = 'bushes';
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
-  bushes.forEach((b, i) => {
+  const bushMat = new THREE.MeshStandardMaterial({ color: 0x2f8f3a, roughness: 1, flatShading: true });
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), bushMats = [];
+  bushes.forEach((b) => {
     q.setFromAxisAngle(_up, rng.range(0, Math.PI * 2)); s.set(b.s, b.s * 0.75, b.s); p.set(b.x, b.s * 0.55, b.z);
-    bm.setMatrixAt(i, m.compose(p, q, s));
+    bushMats.push(new THREE.Matrix4().compose(p, q, s));
     const nf = rng() < 0.7 ? 2 : 0;
     for (let k = 0; k < nf; k++) { const a = rng.range(0, Math.PI * 2), r = rng.range(0.1, 0.5) * b.s; ctx.flowerSpots.push({ x: b.x + Math.cos(a) * r, y: b.s * 0.75 + 0.5 - 0.45, z: b.z + Math.sin(a) * r }); }
   });
-  world.group.add(bm);
+  for (const bm of bucketInstances(bushGeo, bushMat, bushMats, PARK_CELL)) { bm.castShadow = true; bm.name = 'bushes'; world.group.add(bm); }
 
   // flowers: stems (green), heads (per-instance color), centres (yellow)
   const F = ctx.flowerSpots; if (!F.length) return;

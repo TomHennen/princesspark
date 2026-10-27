@@ -48,7 +48,7 @@ async function openPage(br, name, topColor, url = '?skipCreator=1', viewport = {
   await page.waitForFunction(() => window.__game && window.__game.started, null, { timeout: 90000, polling: 100 });
   return page;
 }
-const netInfo = (page) => page.evaluate(() => { const g = window.__game, n = g.net, p = [...n.peers.values()][0]; return { status: n.status, error: n.error, connected: n.connected, relays: n.relays(), room: n.roomCode, size: n.peers.size, peerPos: p && p.group.position.toArray().map((v) => +v.toFixed(2)), peerName: p?.name, me: g.player.position.toArray().map((v) => +v.toFixed(2)), toasts: window.__toasts, btn: document.querySelector('.pk-net-btn')?.textContent }; });
+const netInfo = (page) => page.evaluate(() => { const g = window.__game, n = g.net, p = [...n.peerMap.values()][0]; return { status: n.status, error: n.error, connected: n.connected, relays: n.relays(), room: n.roomCode, size: n.peerMap.size, peerPos: p && p.group.position.toArray().map((v) => +v.toFixed(2)), peerName: p?.name, me: g.player.position.toArray().map((v) => +v.toFixed(2)), toasts: window.__toasts, btn: document.querySelector('.pk-net-btn')?.textContent }; });
 
 try {
   console.log(`room code for this run: ${CODE}`);
@@ -56,8 +56,8 @@ try {
   const B = await openPage(browser, 'Bee', '#2ecc71', `?skipCreator=1&room=${CODE}`);
   // Wait for signaling + WebRTC: Nostr relays usually take 1-10 s.
   const t0 = Date.now();
-  await A.waitForFunction(() => window.__game?.net?.peers.size >= 1, null, { timeout: 60000, polling: 250 }).catch(() => {});
-  await B.waitForFunction(() => window.__game?.net?.peers.size >= 1, null, { timeout: 15000, polling: 250 }).catch(() => {});
+  await A.waitForFunction(() => window.__game?.net?.peerMap.size >= 1, null, { timeout: 60000, polling: 250 }).catch(() => {});
+  await B.waitForFunction(() => window.__game?.net?.peerMap.size >= 1, null, { timeout: 15000, polling: 250 }).catch(() => {});
   console.log(`peer discovery took ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   const a0 = await netInfo(A), b0 = await netInfo(B);
   console.log('A:', JSON.stringify(a0)); console.log('B:', JSON.stringify(b0));
@@ -72,7 +72,7 @@ try {
   await A.evaluate(() => { const g = window.__game; g.player.teleport(-6, 0, 90, 0); g.player.setCameraMode('free'); g.player.cam.yaw = -Math.PI / 2 + 0.55; g.player.cam.pitch = 0.25; g.player.cam.dist = 8; });
   await B.evaluate(() => { const g = window.__game; g.player.teleport(-3, 0, 90, Math.PI / 2); });
   // Software rendering with two pages is slow (well under 10 fps here), so wait until the interpolation has settled.
-  const settled = (page, x, z) => page.waitForFunction(([x, z]) => { const p = [...window.__game.net.peers.values()][0]?.group.position; return p && Math.hypot(p.x - x, p.z - z) < 0.5; }, [x, z], { timeout: 30000, polling: 250 }).catch(() => {});
+  const settled = (page, x, z) => page.waitForFunction(([x, z]) => { const p = [...window.__game.net.peerMap.values()][0]?.group.position; return p && Math.hypot(p.x - x, p.z - z) < 0.5; }, [x, z], { timeout: 30000, polling: 250 }).catch(() => {});
   const bReal = await B.evaluate(() => window.__game.player.position.toArray());
   const aReal = await A.evaluate(() => window.__game.player.position.toArray());
   await settled(A, bReal[0], bReal[2]); await settled(B, aReal[0], aReal[2]);
@@ -84,25 +84,25 @@ try {
 
   // B walks: A should see the avatar move.
   await B.keyboard.down('KeyW'); await sleep(2500); await B.keyboard.up('KeyW');
-  await A.waitForFunction((prev) => { const p = [...window.__game.net.peers.values()][0]?.group.position; return p && Math.hypot(p.x - prev[0], p.z - prev[2]) > 0.5; }, a1.peerPos, { timeout: 20000, polling: 250 }).catch(() => {});
+  await A.waitForFunction((prev) => { const p = [...window.__game.net.peerMap.values()][0]?.group.position; return p && Math.hypot(p.x - prev[0], p.z - prev[2]) > 0.5; }, a1.peerPos, { timeout: 20000, polling: 250 }).catch(() => {});
   const a2 = await netInfo(A);
   check(dist(a2.peerPos, a1.peerPos) > 0.5, `A saw B walk: ${JSON.stringify(a1.peerPos)} -> ${JSON.stringify(a2.peerPos)}`);
 
   // Outfit change propagates (swimsuit override path).
   await B.evaluate(() => window.__game.player.setOutfitOverride('swimsuit'));
-  await A.waitForFunction(() => [...window.__game.net.peers.values()][0]?.avatar.config.outfit === 'swimsuit', null, { timeout: 20000, polling: 250 }).catch(() => {});
-  const outfit = await A.evaluate(() => [...window.__game.net.peers.values()][0].avatar.config.outfit);
+  await A.waitForFunction(() => [...window.__game.net.peerMap.values()][0]?.avatar.config.outfit === 'swimsuit', null, { timeout: 20000, polling: 250 }).catch(() => {});
+  const outfit = await A.evaluate(() => [...window.__game.net.peerMap.values()][0].avatar.config.outfit);
   check(outfit === 'swimsuit', `A sees B's outfit change: ${outfit}`);
 
   await A.screenshot({ path: 'shots/net-two-players.png' });
   console.log('saved shots/net-two-players.png');
 
   // ---- Riding together. Rides animate on each client's own clock, so a remote rider must sit in OUR copy of the ride.
-  const peerOf = (page) => page.evaluate(() => { const p = [...window.__game.net.peers.values()][0]; if (!p) return null; const r = p.rideObj; return { st: p.st, ride: p.ride, slot: p.slot, seated: p.seated, pos: p.group.position.toArray().map((v) => +v.toFixed(2)), vehicle: !!p.vehicle, vehicleInGroup: !!p.vehicle && p.group.children.includes(p.vehicle), children: p.group.children.length, anim: p.avatar.lastAnim ?? null, held: p.avatar.config.held }; });
+  const peerOf = (page) => page.evaluate(() => { const p = [...window.__game.net.peerMap.values()][0]; if (!p) return null; const r = p.rideObj; return { st: p.st, ride: p.ride, slot: p.slot, seated: p.seated, pos: p.group.position.toArray().map((v) => +v.toFixed(2)), vehicle: !!p.vehicle, vehicleInGroup: !!p.vehicle && p.group.children.includes(p.vehicle), children: p.group.children.length, anim: p.avatar.lastAnim ?? null, held: p.avatar.config.held }; });
   const seatWorld = (page, rideId, i) => page.evaluate(([rideId, i]) => { const r = window.__game.rides.find((r) => r.id === rideId); const s = r.peerSeat?.(i); if (!s) return null; s.updateWorldMatrix(true, false); const v = new s.position.constructor(); v.setFromMatrixPosition(s.matrixWorld); return v.toArray().map((n) => +n.toFixed(2)); }, [rideId, i]);
   const board = (page, rideId) => page.evaluate((rideId) => { const g = window.__game, r = g.rides.find((r) => r.id === rideId); if (g.player.state === 'riding') g.player.exitRide(false); g.player.teleport(r.station.x, r.station.y, r.station.z, 0); g.player.boardRide(r); return g.player.state; }, rideId);
   const unboard = (page) => page.evaluate(() => { const g = window.__game; if (g.player.state === 'riding') g.player.exitRide(false); return g.player.state; });
-  const peerRideIs = (page, rideId) => page.waitForFunction((rideId) => [...window.__game.net.peers.values()][0]?.ride === rideId, rideId, { timeout: 20000, polling: 250 }).catch(() => {});
+  const peerRideIs = (page, rideId) => page.waitForFunction((rideId) => [...window.__game.net.peerMap.values()][0]?.ride === rideId, rideId, { timeout: 20000, polling: 250 }).catch(() => {});
   const hasOwn = (page, rideId, fn) => page.evaluate(([rideId, fn]) => { const r = window.__game.rides.find((r) => r.id === rideId); return Object.prototype.hasOwnProperty.call(Object.getPrototypeOf(r), fn); }, [rideId, fn]);
   const dist3 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
 
@@ -121,7 +121,7 @@ try {
   console.log('saved shots/net-coaster-together.png');
   // Both off: the seat slot is released and the remote avatar snaps back to the transmitted spot.
   await unboard(A); await unboard(B);
-  await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
+  await B.waitForFunction(() => [...window.__game.net.peerMap.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
   await sleep(500);
   bp = await peerOf(B);
   const riders = await B.evaluate(() => window.__game.net.riders());
@@ -144,7 +144,7 @@ try {
   await B.screenshot({ path: 'shots/net-river-peer.png' });
   console.log('saved shots/net-river-peer.png');
   await unboard(A);
-  await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
+  await B.waitForFunction(() => [...window.__game.net.peerMap.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
 
   // Light cycle (drive ride): the remote avatar gets its own bike mesh under its group and uses the transmitted transform.
   await board(A, 'lightcycle');
@@ -156,23 +156,54 @@ try {
   if (await hasOwn(B, 'lightcycle', 'makePeerVehicle')) check(bp?.vehicle && bp.vehicleInGroup, `B's remote group carries a peer vehicle mesh: ${JSON.stringify(bp)}`);
   else console.log('WARN lightcycle has no makePeerVehicle yet (base returns null) — rides agent pending');
   await unboard(A);
-  await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
+  await B.waitForFunction(() => [...window.__game.net.peerMap.values()][0]?.ride === null, null, { timeout: 20000, polling: 250 }).catch(() => {});
   bp = await peerOf(B);
   check(bp && !bp.vehicle && bp.children === 2, `vehicle removed when A gets off (group children ${bp?.children})`);
 
   // Hand-held item travels with the look (join payload re-sent when the config changes).
   await A.evaluate(() => { const g = window.__game; if (g.player.setHeld) g.player.setHeld('balloon'); else g.player.config.held = 'balloon'; });
-  await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.avatar.config.held === 'balloon', null, { timeout: 20000, polling: 250 }).catch(() => {});
+  await B.waitForFunction(() => [...window.__game.net.peerMap.values()][0]?.avatar.config.held === 'balloon', null, { timeout: 20000, polling: 250 }).catch(() => {});
   bp = await peerOf(B);
   check(bp?.held === 'balloon', `B sees A's held item: ${bp?.held}`);
   // Sitting: the transmitted transform is used with the sit anim.
   const sat = await A.evaluate(() => { const g = window.__game; if (!g.player.sitAt) return null; g.player.sitAt({ id: 'test-bench', position: g.player.position.clone(), facing: 0 }); return g.player.state; });
   if (sat === 'sit') {
-    await B.waitForFunction(() => [...window.__game.net.peers.values()][0]?.st === 'sit', null, { timeout: 20000, polling: 250 }).catch(() => {});
+    await B.waitForFunction(() => [...window.__game.net.peerMap.values()][0]?.st === 'sit', null, { timeout: 20000, polling: 250 }).catch(() => {});
     bp = await peerOf(B);
     check(bp?.st === 'sit', `B sees A sitting: ${JSON.stringify(bp)}`);
     await A.evaluate(() => window.__game.player.standUp?.());
   } else console.log('WARN player.sitAt not available yet — sit sync not exercised');
+
+  // ---- net.peers() + bop. peers() lists the rendered remote players with a live position (what the items module hit-tests).
+  await A.evaluate(() => { const g = window.__game; g.player.teleport(-6, 0, 90, Math.PI / 2); });
+  await B.evaluate(() => { const g = window.__game; g.player.teleport(-4, 0, 90, -Math.PI / 2); });
+  await settled(A, -4, 90);
+  const peersA = await A.evaluate(() => window.__game.net.peers().map((p) => ({ id: p.id, name: p.name, pos: p.position.toArray().map((v) => +v.toFixed(2)), isV3: typeof p.position.distanceTo === 'function', group: !!p.group?.isObject3D })));
+  check(peersA.length === 1 && peersA[0].name === 'Bee' && peersA[0].isV3 && peersA[0].group && /^[A-Za-z0-9_-]{4,64}$/.test(peersA[0].id), `A.net.peers() lists Bee with a Vector3 position and group: ${JSON.stringify(peersA)}`);
+  check(peersA[0] && dist(peersA[0].pos, [-4, 0, 90]) < 1, `peers()[0].position is where B stands: ${JSON.stringify(peersA[0]?.pos)}`);
+  // A bops B through the items-module event; B must toast, record it and stagger.
+  const bopSent = await A.evaluate(() => { const g = window.__game, p = g.net.peers()[0]; g.events.emit('bop', { targetKind: 'peer', id: p.id, item: 'balloon' }); return g.net.bop(p.id, 'needoh'); });
+  check(bopSent === true, 'net.bop(peerId, item) returns true while connected');
+  await B.waitForFunction(() => !!window.__game.net.lastBop, null, { timeout: 20000, polling: 100 }).catch(() => {});
+  const bopB = await B.evaluate(() => { const n = window.__game.net; return { last: n.lastBop && { name: n.lastBop.name, item: n.lastBop.item }, toasts: window.__toasts.filter((t) => /bopped/.test(t)) }; });
+  check(bopB.last?.name === 'Ava' && ['balloon', 'needoh'].includes(bopB.last.item), `B received the bop from Ava (lastBop = whichever of the two arrived last): ${JSON.stringify(bopB.last)}`);
+  check(bopB.toasts.some((t) => t.includes('Ava bopped you! 🎈')), `B was toasted "Ava bopped you! 🎈": ${JSON.stringify(bopB.toasts)}`);
+  check(bopB.toasts.some((t) => t.includes('🟣')), `second bop (needoh) toasted with its emoji: ${JSON.stringify(bopB.toasts)}`);
+  // The stagger / swing one-shots resolve on B's own avatar and on the remote copy of A, without errors.
+  const fxDone = await B.evaluate(() => Promise.race([
+    Promise.all([window.__game.player.avatar.bopped(), window.__game.player.avatar.bop(), [...window.__game.net.peerMap.values()][0].avatar.bopped()]).then(() => 'ok'),
+    new Promise((r) => setTimeout(() => r('timeout'), 4000)),
+  ]));
+  check(fxDone === 'ok', `avatar.bopped() / bop() resolve on the local player and a remote avatar: ${fxDone}`);
+  const bErr = B.errors.filter((e) => !isWsNoise(e));
+  check(bErr.length === 0, `B had no console errors after the bop (${bErr.length})`);
+  if (bErr.length) console.log([...new Set(bErr)].slice(0, 8).join('\n'));
+  // Bops on NPCs are local only: nothing is relayed.
+  const atBefore = await B.evaluate(() => window.__game.net.lastBop?.at ?? 0);
+  await A.evaluate(() => window.__game.events.emit('bop', { targetKind: 'npc', id: 'p1', item: 'balloon' }));
+  await sleep(1500);
+  const atAfter = await B.evaluate(() => window.__game.net.lastBop?.at ?? 0);
+  check(atAfter === atBefore, 'a bop on an NPC is not relayed to peers');
 
   // Lobby card (desktop, while in a room) and the phone layout (no room yet).
   await A.click('.pk-net-btn'); await sleep(300);
@@ -196,7 +227,7 @@ try {
 
   // Leaving: close B, A should drop the peer and say so.
   await B.context().close();
-  await A.waitForFunction(() => window.__game?.net?.peers.size === 0, null, { timeout: 20000, polling: 250 }).catch(() => {});
+  await A.waitForFunction(() => window.__game?.net?.peerMap.size === 0, null, { timeout: 20000, polling: 250 }).catch(() => {});
   const a3 = await netInfo(A);
   check(a3.size === 0, 'A dropped B after B closed');
   check(a3.toasts.some((t) => /Bee left/.test(t)), 'A was told Bee left');

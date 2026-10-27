@@ -50,6 +50,72 @@ export class MeshBuilder {
     merged.computeBoundingSphere();
     return new THREE.Mesh(merged, material);
   }
+  /**
+   * Like build(), but one Mesh per `cell`-metre grid square (by each piece's centre) so a park-spanning set of
+   * dressing is frustum-culled region by region instead of drawn (and shadow-cast) in full from everywhere.
+   * Keep cells coarse (PARK_CELL ≈ a quadrant): every bucket in view is an extra draw call, and draw calls are
+   * what the iPad pays for. Returns Mesh[] (empty when nothing was added) and resets.
+   */
+  buildGrid(material, cell = PARK_CELL) {
+    const buckets = new Map();
+    for (const g of this.geoms) {
+      g.computeBoundingBox(); g.boundingBox.getCenter(_p);
+      const k = `${Math.floor(_p.x / cell)},${Math.floor(_p.z / cell)}`;
+      (buckets.get(k) || buckets.set(k, []).get(k)).push(g);
+    }
+    const meshes = [];
+    for (const geoms of buckets.values()) {
+      const merged = mergeGeometries(geoms, false);
+      for (const g of geoms) g.dispose();
+      merged.computeBoundingSphere();
+      meshes.push(new THREE.Mesh(merged, material));
+    }
+    this.geoms = [];
+    return meshes;
+  }
+}
+
+/** Grid cell for park-wide bucketing: boundaries at x/z = 0 and ±135, i.e. the park's quadrants plus the east wing (≤ 6 buckets). */
+export const PARK_CELL = 135;
+
+/**
+ * Several InstancedMeshes instead of one, bucketed by instance position into `cell`-metre grid squares (an
+ * InstancedMesh is frustum-culled as a whole, so a park-wide one is drawn from everywhere). `matrices` are in
+ * the parent's space. Each mesh gets a real bounding sphere; mesh.userData.indices lists the source indices.
+ */
+export function bucketInstances(geometry, material, matrices, cell = PARK_CELL) {
+  const buckets = new Map();
+  matrices.forEach((m, i) => {
+    const k = `${Math.floor(m.elements[12] / cell)},${Math.floor(m.elements[14] / cell)}`;
+    (buckets.get(k) || buckets.set(k, []).get(k)).push(i);
+  });
+  return [...buckets.values()].map((indices) => {
+    const mesh = new THREE.InstancedMesh(geometry, material, indices.length);
+    indices.forEach((i, j) => mesh.setMatrixAt(j, matrices[i]));
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.userData.indices = indices;
+    return mesh;
+  });
+}
+
+/**
+ * Point lights are shaded on every pixel whether or not they are nearby (three.js has no light culling), so this
+ * switches them off while the player is far away. Returns tick(): call it every frame. It re-checks every 10
+ * frames with hysteresis (on inside 1.5× the light's range, off beyond 1.8×) because a change in the number of
+ * visible lights makes the renderer compile new shader variants — a one-off hitch that must not flap.
+ */
+export function makeLightCuller(game, lights) {
+  let frame = 0;
+  return () => {
+    if (frame++ % 10) return;
+    const p = game?.player?.position; if (!p) return;
+    for (const l of lights) {
+      const reach = l.distance || 60, d = l.getWorldPosition(_p).distanceTo(p);
+      if (l.visible && d > reach * 1.8) l.visible = false;
+      else if (!l.visible && d < reach * 1.5) l.visible = true;
+    }
+  };
 }
 
 /** Give every vertex of a geometry the same color (writes a 'color' attribute). */

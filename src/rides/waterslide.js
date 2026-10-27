@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Ride } from './Ride.js';
-import { Track, makeSign, makeStripeTexture } from './shared/track.js';
+import { Track, makeSign, makeStripeTexture, addPlotFence } from './shared/track.js';
 import { MeshBuilder } from '../world/builder.js';
 
 const G = 9.81, CRAWL = 2.0, HELIX = 5.6, SWOOP = 6.5, RINGS = 3, SPLASH_N = 22, SEG = 1.2;
@@ -80,6 +80,9 @@ export class WaterSlide extends Ride {
 
     this.group.updateMatrixWorld(true);
     this.station.copy(this.group.localToWorld(new THREE.Vector3(6, 0, 31)));
+    // plot fence hugging the tower, helix and pool (the wave pool west of here is the world's); the gap spans the
+    // pool's queue rails on the promenade side so only the exit steps between them lead in
+    addPlotFence(this, { rect: { x0: -3, x1: 25, z0: -19, z1: 29.6 }, side: 'S', gap: [-0.6, 12.6], colors: { post: 0xffffff, cap: 0xff7bac, rail: 0x3aa8e0 } });
   }
 
   buildFlume(M) {

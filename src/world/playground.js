@@ -119,8 +119,15 @@ export function buildPlayground(world) {
   world.group.add(spin);
   world.addPlatform(MX - 1.5, MX + 1.5, MZ - 1.5, MZ + 1.5, 0.5);
   const spinSeat = new THREE.Object3D(); spinSeat.position.set(1.05, 0.2, 0); spinSeat.rotation.y = Math.PI / 2; spin.add(spinSeat);
-  sitInteract({ id: 'spinner', position: new THREE.Vector3(MX + 1.05, 0.5, MZ), facing: Math.PI / 2, attachTo: spinSeat, seatHeight: 0 }, 'Spin', 'merry-go-round', 'spinner');
-  let spinW = 0;
+  const spinnerSeat = { id: 'spinner', position: new THREE.Vector3(MX + 1.05, 0.5, MZ), facing: Math.PI / 2, attachTo: spinSeat, seatHeight: 0 };
+  world.seats.push(spinnerSeat);
+  const spinner = buildSpinnerControl(world, spin, spinSeat, spinnerSeat, new THREE.Vector3(MX, 0.3, MZ), occupied);
+  world.playground = world.playground || {}; world.playground.spinner = spinner;
+  game?.interactables?.push({
+    position: spinnerSeat.position, radius: 2.2, label: 'Spin', sub: 'merry-go-round', kind: 'misc', id: 'spinner',
+    enabled: () => game.player?.state === 'walk',
+    onInteract: () => spinner.choose(),
+  });
 
   // --- seesaw: plank on a stand, tilts toward whichever end is occupied ---
   const WX = 33.5, WZ = 93;
@@ -175,8 +182,7 @@ export function buildPlayground(world) {
       sw.amp += (want - sw.amp) * Math.min(1, dt * (want ? 0.9 : 0.5));
       sw.pivot.rotation.x = (sw.amp + 0.04) * Math.sin(t * 2.0 + sw.phase);
     }
-    spinW += ((occupied.has('spinner') ? 2.4 : 0) - spinW) * Math.min(1, dt * (occupied.has('spinner') ? 0.8 : 0.4));
-    spin.rotation.y += spinW * dt;
+    spinner.update(dt);
     let tilt = -0.26;
     for (const ss of seesawSeats) if (occupied.has(ss.id)) tilt = ss.s * (0.2 + 0.1 * Math.cos(t * 2.4));
     plank.rotation.z += (tilt - plank.rotation.z) * Math.min(1, dt * 3);
@@ -188,6 +194,109 @@ export function buildPlayground(world) {
       onTop = now;
     }
   });
+}
+
+const SPIN = {
+  gentle: { omega: 2.4, accel: 2.0 },
+  fast:   { omega: 5.0, accel: 2.5 },
+  turbo:  { omega: 12.0, accel: 3.2, flingAt: 6.0 },
+  push:   { duration: 8.5, firstPush: 2.0, every: 1.1, step: 1.7, maxOmega: 10 },
+};
+const PUSH_OFFSET = new THREE.Vector3(0, 0, 2.4);   // where the pusher stands: just south of the platter edge
+
+/**
+ * The spinner's brain: speed menu (gentle / fast / turbo / push), the spin itself, the turbo + push flings and the
+ * `spinner:push:*` events for the playground pal. Remote riders (occupied set, no mode) still get the gentle spin.
+ * Exposed as world.playground.spinner = { mode, omega, setMode(), choose() } for tests.
+ */
+function buildSpinnerControl(world, spin, spinSeat, seat, centre, occupied) {
+  const game = world.game, events = game?.events;
+  const ctl = { mode: null, omega: 0, t: 0, pushing: false, pushes: 0, target: 0 };
+  const pusherAt = centre.clone().add(PUSH_OFFSET).setY(0);
+
+  const start = (mode) => {
+    const player = game?.player;
+    if (!player || player.state !== 'walk' || !SPIN[mode]) return;
+    events?.emit('play', { id: 'spinner' }); game.audio?.play?.('click');
+    player.sitAt?.(seat);
+    if (player.state !== 'sit') return;
+    ctl.setMode(mode);
+  };
+  /** Pick a mode while seated (also usable from the console / tests). */
+  ctl.setMode = (mode) => {
+    if (!SPIN[mode]) return;
+    ctl.mode = mode; ctl.t = 0; ctl.pushes = 0;
+    ctl.target = mode === 'push' ? Math.max(ctl.omega, 0.6) : SPIN[mode].omega;
+    if (mode === 'turbo') game.audio?.play?.('boost');
+    if (mode === 'push') {
+      ctl.pushing = true;
+      events?.emit('spinner:push:start', { position: pusherAt.clone(), duration: SPIN.push.duration });
+      game.ui?.toast?.('Hold on — here comes a push!');
+    }
+  };
+  /** Menu first, then sit + spin. Falls back to a gentle spin when the UI has no chooser yet. */
+  ctl.choose = async () => {
+    if (!game?.ui?.chooseMenu) return start('gentle');
+    const picked = await game.ui.chooseMenu({
+      title: 'How fast?',
+      options: [
+        { label: 'Gentle', sub: 'a nice slow twirl', value: 'gentle' },
+        { label: 'Fast', sub: 'hold on tight', value: 'fast' },
+        { label: 'TURBO', sub: 'uh oh…', value: 'turbo' },
+        { label: 'Get a push!', sub: 'the playground pal spins you', value: 'push' },
+      ],
+      cancel: 'Never mind',
+    });
+    if (picked) start(picked);
+  };
+  /** Stop driving the spin (stood up / flung). Ends a running push. */
+  const end = () => {
+    const wasPushing = ctl.pushing;
+    ctl.mode = null; ctl.pushing = false; ctl.t = 0; ctl.pushes = 0; ctl.target = 0;
+    if (wasPushing) events?.emit('spinner:push:end', {});
+  };
+  /** Fling the rider off tangentially (like the teacups' launch): stand up, then player.launch along the rim's motion. */
+  const fling = () => {
+    const player = game?.player;
+    if (!player || player.state !== 'sit' || player.seat?.id !== 'spinner') return end();
+    const seatPos = new THREE.Vector3(); spinSeat.getWorldPosition(seatPos);
+    const radial = new THREE.Vector3(seatPos.x - centre.x, 0, seatPos.z - centre.z);
+    if (radial.lengthSq() < 1e-4) radial.set(1, 0, 0);
+    radial.normalize();
+    // tangent of a +Y rotation at this point: (z, -x); mix in a little outward so they clear the platter
+    const dir = new THREE.Vector3(radial.z, 0, -radial.x).multiplyScalar(Math.sign(ctl.omega) || 1).addScaledVector(radial, 0.35).normalize();
+    const speed = THREE.MathUtils.clamp(Math.abs(ctl.omega) * 1.05, 7, 10.5);
+    const vel = new THREE.Vector3(dir.x * speed, 11, dir.z * speed);
+    if (player.cam) { player.cam.yaw = Math.atan2(dir.x, dir.z) + Math.PI / 2; player.cam.pitch = 0.3; }
+    player.launch(vel, 9);   // stands up (seat:stand -> end()) and starts the arc; plays 'whoosh'
+    game.ui?.toast?.('WHEEEEE! 🌀', 2500);
+  };
+  events?.on('seat:stand', (e) => { if (e?.id === 'spinner') end(); });
+
+  ctl.update = (dt) => {
+    const riding = game?.player?.state === 'sit' && game.player.seat?.id === 'spinner';
+    if (ctl.mode && !riding) end();
+    let target = ctl.mode ? ctl.target : (occupied.has('spinner') ? SPIN.gentle.omega : 0);
+    let k = ctl.mode ? SPIN[ctl.mode].accel || 2 : 0.4;
+    if (ctl.mode) {
+      ctl.t += dt;
+      const S = SPIN[ctl.mode];
+      if (ctl.mode === 'turbo') {
+        // linear spin-up to the absurd speed, then let go
+        ctl.omega = Math.min(S.omega, ctl.omega + S.accel * dt); target = ctl.omega; k = 0;
+        if (ctl.t >= S.flingAt) fling();
+      } else if (ctl.mode === 'push') {
+        // each shove of the pal is a step in the target speed; after the last one the rider flies off
+        const due = Math.floor(Math.max(0, ctl.t - S.firstPush) / S.every) + (ctl.t >= S.firstPush ? 1 : 0);
+        while (ctl.pushes < due && ctl.t < S.duration) { ctl.pushes++; ctl.target = Math.min(S.maxOmega, ctl.target + S.step); game.audio?.play?.('whoosh'); }
+        target = ctl.target; k = 2.2;
+        if (ctl.t >= S.duration) fling();
+      }
+    }
+    if (k) ctl.omega += (target - ctl.omega) * Math.min(1, dt * k);
+    spin.rotation.y += ctl.omega * dt;
+  };
+  return ctl;
 }
 
 /** A chute along a curve: pink/yellow tube under a wide trough with raised lips (merged into B). */

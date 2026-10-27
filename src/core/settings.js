@@ -2,11 +2,14 @@
 // Nothing in the codebase should contain a real person's name or age.
 export const SETTINGS_KEY = 'pk:settings';
 export const WEATHERS = ['sunny', 'cloudy', 'rain', 'storm', 'sunset', 'night'];
+// Graphics quality tier (see game.perf in main.js). 'auto' picks medium on touch/mobile devices, high on desktop.
+export const QUALITIES = ['auto', 'low', 'medium', 'high'];
 
 export const DEFAULT_SETTINGS = {
   parkName: 'Sunshine Kingdom',
   setupDone: false,
   weather: 'sunny',           // 'sunny' | 'cloudy' | 'rain' | 'storm' | 'sunset' | 'night'
+  quality: 'auto',            // 'auto' | 'low' | 'medium' | 'high'
   princesses: [
     // p1: the warm, clever big-sister type. p2: the bubbly hype type. Personalities are archetypes, not people.
     { id: 'p1', name: 'Juniper', color: '#0b5d3b', catchphrase: '' },
@@ -32,6 +35,7 @@ function normalize(s) {
   const out = { ...DEFAULT_SETTINGS, ...(s || {}) };
   out.parkName = sanitizeName(out.parkName, 24) || DEFAULT_SETTINGS.parkName;
   out.weather = WEATHERS.includes(out.weather) ? out.weather : DEFAULT_SETTINGS.weather;
+  out.quality = QUALITIES.includes(out.quality) ? out.quality : DEFAULT_SETTINGS.quality;
   out.princesses = DEFAULT_SETTINGS.princesses.map((d, i) => {
     const p = { ...d, ...((s && s.princesses && s.princesses[i]) || {}) };
     p.id = d.id;

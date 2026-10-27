@@ -40,9 +40,13 @@ export function buildSky(world) {
   const sunOffset = new THREE.Vector3(45, 80, 30);
   const sun = new THREE.DirectionalLight(0xfff1d6, 2.6);
   sun.position.copy(sunOffset); sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  const sc = sun.shadow.camera; sc.left = -65; sc.right = 65; sc.top = 65; sc.bottom = -65; sc.near = 1; sc.far = 230;
+  // The shadow camera is a box around the player (the light follows them); setShadowQuality() sizes it per tier.
+  // Near/far are tight around the light→player distance (~98 m) so depth precision isn't wasted.
+  const sc = sun.shadow.camera; sc.near = 20; sc.far = 180;
   sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.6;
+  const shadowState = { size: 2048, soft: true, extent: 60 };
+  const setShadowExtent = (e) => { shadowState.extent = e; sc.left = -e; sc.right = e; sc.top = e; sc.bottom = -e; sc.updateProjectionMatrix(); };
+  sun.shadow.mapSize.set(2048, 2048); setShadowExtent(60);
   world.group.add(sun, sun.target);
   const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x5aa14a, 0.85);
   world.group.add(hemi);
@@ -65,7 +69,7 @@ export function buildSky(world) {
   const cloudGeo = mergeGeometries(parts, false);
   const cloudMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, emissive: 0x6d7f8c, emissiveIntensity: 0.35 });
   const N = 36, clouds = new THREE.InstancedMesh(cloudGeo, cloudMat, N);
-  clouds.frustumCulled = false;
+  clouds.frustumCulled = false; clouds.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   const cd = [];
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
   for (let i = 0; i < N; i++) {
@@ -90,7 +94,7 @@ export function buildSky(world) {
     const x = rng.range(-RW / 2, RW / 2), y = rng.range(-6, RH), z = rng.range(-RW / 2, RW / 2);
     rainPos.set([x, y, z, x, y - 0.9, z], i * 6);
   }
-  const rainGeo = new THREE.BufferGeometry(); rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+  const rainGeo = new THREE.BufferGeometry(); rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3).setUsage(THREE.DynamicDrawUsage));
   const rain = new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({ color: 0xcfe3f5, transparent: true, opacity: 0.45 }));
   rain.frustumCulled = false; rain.visible = false; rain.name = 'rain';
   world.group.add(rain);
@@ -100,6 +104,26 @@ export function buildSky(world) {
     sun, hemi, dome, disc, clouds, stars, rain,
     name: 'sunny', preset: PRESETS.sunny, rainRate: 0,
     flash: 0, nextBolt: 0, thunderIn: -1,
+    shadow: shadowState,
+    /**
+     * Sun shadow quality (called by game.perf): size 0 = no shadows at all; otherwise the shadow map is size×size,
+     * PCFSoft when `soft` else plain PCF. Cheap maps get a tighter box so they stay crisp near the player.
+     * Changing the type/enabled state needs every lit material recompiled, so this is a one-off cost, never per frame.
+     */
+    setShadowQuality(size, soft) {
+      const on = size > 0;
+      shadowState.size = size; shadowState.soft = !!soft;
+      sun.castShadow = on;
+      if (on) { sun.shadow.mapSize.set(size, size); setShadowExtent(size >= 2048 ? 60 : 48); }
+      if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }   // re-created at the new size on the next pass
+      if (renderer) {
+        const type = soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+        const changed = renderer.shadowMap.enabled !== on || renderer.shadowMap.type !== type;
+        renderer.shadowMap.enabled = on; renderer.shadowMap.type = type; renderer.shadowMap.needsUpdate = true;
+        if (changed) scene.traverse((o) => { const m = o.material; if (!m) return; if (Array.isArray(m)) m.forEach((x) => { x.needsUpdate = true; }); else m.needsUpdate = true; });
+      }
+      return shadowState;
+    },
     setWeather(name) {
       const pr = PRESETS[name] || PRESETS.sunny; name = PRESETS[name] ? name : 'sunny';
       sky.name = name; sky.preset = pr;
@@ -121,9 +145,11 @@ export function buildSky(world) {
     },
   };
 
+  let cloudAcc = 0;
   world.animated.push((dt, t) => {
-    for (const c of cd) { c.x += c.v * dt; if (c.x > 320) c.x = -320; }
-    placeClouds();
+    // clouds drift at ~2 m/s 60+ m up: moving them every other frame is invisible and halves the matrix upload
+    cloudAcc += dt;
+    if (cloudAcc >= 1 / 30) { for (const c of cd) { c.x += c.v * cloudAcc; if (c.x > 320) c.x = -320; } cloudAcc = 0; placeClouds(); }
     const pl = world.game.player?.position;
     if (pl) { sun.target.position.set(pl.x, 0, pl.z); sun.position.set(pl.x + sunOffset.x, sunOffset.y, pl.z + sunOffset.z); }
     const cam = world.game.camera;

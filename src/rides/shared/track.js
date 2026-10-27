@@ -113,7 +113,7 @@ export function buildRails(track, o = {}) {
   }
   const tube = (pts, r, rad) => new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.5), N, r, rad, true);
   const rails = new THREE.Mesh(mergeGeometries([tube(left, railR, radial), tube(right, railR, radial)]), o.railMat);
-  rails.castShadow = true; g.add(rails);
+  g.add(rails);   // no shadow: the thin rails add thousands of shadow-pass triangles for a line the spine already draws
   if (o.spineMat) { const sp = new THREE.Mesh(tube(spine, o.spineR ?? 0.22, 4), o.spineMat); sp.castShadow = true; g.add(sp); }
   const count = Math.floor(track.length / tieEvery);
   const ties = new THREE.InstancedMesh(new THREE.BoxGeometry(gauge + 0.5, 0.12, 0.28), o.tieMat, count);
@@ -301,3 +301,83 @@ export function makeStripeTexture(o = {}) {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
+
+/**
+ * Decorative fence around a ride plot with one gap at the queue, plus coarse colliders (one box per fence
+ * run, not per post). Everything is in ride-local space.
+ *   rect: { x0, x1, z0, z1 }   explicit rectangle — or w / d (plot footprint, centred) with `inset` (default 1)
+ *   side: 'S' (+z) | 'N' (−z) | 'E' (+x) | 'W' (−x)   which side holds the gap (default: the side nearest ride.station)
+ *   gap:  width (centred on the station's coordinate along that side) or [a, b] explicit range (default 8)
+ *   runs: extra straight runs [[x0, z0, x1, z1], ...] (e.g. rails that join a queue to the fence)
+ *   colors: { post, cap, rail }   height (default 1.1)
+ * Returns the fence Group (2 draw calls: instanced posts with finials, instanced rails).
+ */
+export function addPlotFence(ride, o = {}) {
+  const inset = o.inset ?? 1, h = o.height ?? 1.1, every = o.every ?? 2.4;
+  const r = o.rect || { x0: -o.w / 2 + inset, x1: o.w / 2 - inset, z0: -o.d / 2 + inset, z1: o.d / 2 - inset };
+  // station in local space → side nearest to it
+  ride.group.updateMatrixWorld(true);
+  const st = ride.group.worldToLocal(ride.station.clone());
+  let side = o.side;
+  if (!side) {
+    const d = { S: Math.abs(st.z - r.z1), N: Math.abs(st.z - r.z0), E: Math.abs(st.x - r.x1), W: Math.abs(st.x - r.x0) };
+    side = Object.keys(d).sort((a, b) => d[a] - d[b])[0];
+  }
+  const along = side === 'S' || side === 'N' ? st.x : st.z;
+  const gap = Array.isArray(o.gap) ? o.gap : [along - (o.gap ?? 8) / 2, along + (o.gap ?? 8) / 2];
+  // fence runs as [x0, z0, x1, z1]; the gap side is split in two
+  const runs = [];
+  const sideRun = (name, a, b) => {
+    if (name !== side) { runs.push(a.concat(b)); return; }
+    const horiz = name === 'S' || name === 'N';
+    const lo = horiz ? Math.min(a[0], b[0]) : Math.min(a[1], b[1]), hi = horiz ? Math.max(a[0], b[0]) : Math.max(a[1], b[1]);
+    const fixed = horiz ? a[1] : a[0];
+    const seg = (p, q) => (horiz ? [p, fixed, q, fixed] : [fixed, p, fixed, q]);
+    if (gap[0] > lo + 0.3) runs.push(seg(lo, Math.min(gap[0], hi)));
+    if (gap[1] < hi - 0.3) runs.push(seg(Math.max(gap[1], lo), hi));
+  };
+  sideRun('N', [r.x0, r.z0], [r.x1, r.z0]);
+  sideRun('S', [r.x0, r.z1], [r.x1, r.z1]);
+  sideRun('W', [r.x0, r.z0], [r.x0, r.z1]);
+  sideRun('E', [r.x1, r.z0], [r.x1, r.z1]);
+  for (const run of o.runs || []) runs.push(run);
+
+  // geometry: post (box) + gold finial (sphere) baked into one vertex-coloured unit; rails as a unit box scaled per run
+  const colors = { post: 0xfafafa, cap: 0xd9a63a, rail: 0x1e6b3c, ...(o.colors || {}) };
+  const paint = (g, c) => { const col = new THREE.Color(c), n = g.attributes.position.count, arr = new Float32Array(n * 3); for (let i = 0; i < n; i++) { arr[i * 3] = col.r; arr[i * 3 + 1] = col.g; arr[i * 3 + 2] = col.b; } g.setAttribute('color', new THREE.BufferAttribute(arr, 3)); return g; };
+  const postGeo = mergeGeometries([paint(new THREE.BoxGeometry(0.16, h, 0.16).translate(0, h / 2, 0), colors.post), paint(new THREE.SphereGeometry(0.11, 8, 6).translate(0, h + 0.08, 0), colors.cap)]);
+  const railGeo = paint(new THREE.BoxGeometry(1, 0.07, 0.07), colors.rail);
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.05 });
+  const postM = [], railM = [];
+  const y = o.y ?? 0;
+  for (const [x0, z0, x1, z1] of runs) {
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    if (len < 0.4) continue;
+    const yaw = Math.atan2(x1 - x0, z1 - z0);
+    _q.setFromAxisAngle(_yAxis, yaw);
+    const n = Math.max(1, Math.round(len / every));
+    for (let i = 0; i <= n; i++) {
+      const f = i / n;
+      postM.push(new THREE.Matrix4().compose(_p.set(x0 + (x1 - x0) * f, y, z0 + (z1 - z0) * f), _q, _s.set(1, 1, 1)));
+    }
+    _q.setFromAxisAngle(_yAxis, yaw + Math.PI / 2);   // the unit rail runs along +x; turn it onto the run
+    for (const ry of [h * 0.42, h * 0.82]) railM.push(new THREE.Matrix4().compose(_p.set((x0 + x1) / 2, y + ry, (z0 + z1) / 2), _q, _s.set(len, 1, 1)));
+    // one coarse collider per run (0.3 thick, 1.2 tall)
+    const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, sx = Math.max(0.3, Math.abs(x1 - x0) + 0.3), sz = Math.max(0.3, Math.abs(z1 - z0) + 0.3);
+    ride.addBoxCollider(new THREE.Vector3(cx, y + 0.6, cz), new THREE.Vector3(sx, 1.2, sz));
+  }
+  _s.set(1, 1, 1);
+  const g = new THREE.Group(); g.name = 'plotFence';
+  const posts = new THREE.InstancedMesh(postGeo, mat, postM.length);
+  postM.forEach((m, i) => posts.setMatrixAt(i, m));
+  const rails = new THREE.InstancedMesh(railGeo, mat, railM.length);
+  railM.forEach((m, i) => rails.setMatrixAt(i, m));
+  posts.instanceMatrix.needsUpdate = true; rails.instanceMatrix.needsUpdate = true;
+  posts.userData.noOcclude = true; rails.userData.noOcclude = true;   // thin: never pull the ride camera in
+  // no shadows: a 0.16 m post's shadow is invisible, a hundred posts per ride in the shadow pass are not
+  g.add(posts, rails);
+  ride.group.add(g);
+  g.userData.rect = r; g.userData.gap = { side, range: gap };
+  return g;
+}
+const _yAxis = new THREE.Vector3(0, 1, 0);

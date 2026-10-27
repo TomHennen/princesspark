@@ -20,6 +20,7 @@ export const RIDE_IDS = ['coaster', 'logflume', 'carousel', 'ferris', 'teacups',
 export const WATER_RIDE_IDS = ['waterslide', 'lazyriver'];
 export const GEM_TOTAL = 14; // matches world.gemSpots.length (12 in the main park + 2 in Splash Cove)
 export const PLAYGROUND_TOTAL = 5; // swing, slide, spinner, seesaw, climb (world emits `play` { id })
+export const KEYS_TOTAL = 5;       // royal keys needed to open the castle (one per fully completed day)
 
 export const ACCESSORY_NAMES = {
   halo: 'Halo', wings: 'Fairy Wings', crown: 'Royal Crown', wizardHat: 'Wizard Hat',
@@ -64,7 +65,7 @@ export const QUEST_DEFS = [
     reward: { accessories: ['cape'], text: 'Hero Cape unlocked!' },
     progress: (s) => Math.min(3, s.stats.perRide?.coaster || 0) },
   { id: 'royal', title: 'Complete every quest', total: 7,
-    reward: { royal: true, text: 'You earned the Royal Keys!' },
+    reward: { royal: true, text: 'You earned a Royal Key! 🔑 (1/5)' },
     progress: (s) => QUEST_DEFS.filter((q) => q.id !== 'royal' && s.completed.includes(q.id)).length },
 ];
 
@@ -109,9 +110,12 @@ const Q = {
     hint: 'The princesses are at the gazebo in Princess Plaza. Say hi to both.' }),
   walk: (m) => ({ id: 'walk', title: `Walk ${m} metres around the park`, total: m, progress: (s, d) => Math.floor(d.walked),
     hint: 'Just explore! Every step counts. Splash Cove is a nice long walk.' }),
+  // only once the castle is open (5 royal keys): the throne room's two thrones are seats 'throneL' / 'throneR'
+  throne: () => ({ id: 'throne', title: 'Sit on a throne', total: 1, progress: (s, d) => Math.min(1, d.throne || 0),
+    hint: 'The castle keep is open now! Cross the drawbridge, go through the big door and press E at a throne.' }),
 };
 const royal = (day, n) => ({ id: day === 1 ? 'royal' : `d${day}-royal`, title: 'Complete every quest', total: n, royalDay: day,
-  reward: day === 1 ? { royal: true, text: 'You earned the Royal Keys!' } : { day: true, text: `Day ${day} complete! Sleep in your bed to start Day ${day + 1}.` },
+  reward: day === 1 ? { royal: true, text: 'You earned a Royal Key! 🔑 (1/5)' } : { day: true, text: `Day ${day} complete! Sleep in your bed to start Day ${day + 1}.` },
   progress: () => 0 }); // real progress is computed in progressOf() (counts the day's other quests)
 
 const DAY_LISTS = {
@@ -129,8 +133,11 @@ const POOL = [
 ];
 function seededRng(seed) { let s = (seed * 2654435761 + 12345) >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 
-/** The quest list for `day` (ids are prefixed `d<N>-` from day 2 so completions never collide across days). */
-export function questsForDay(day) {
+/**
+ * The quest list for `day` (ids are prefixed `d<N>-` from day 2 so completions never collide across days).
+ * `castleOpen`: once the castle doors are open, every generated day also asks for a sit on a throne.
+ */
+export function questsForDay(day, { castleOpen = false } = {}) {
   let list;
   if (day <= 1) return QUEST_DEFS;
   if (DAY_LISTS[day]) list = DAY_LISTS[day]();
@@ -143,6 +150,7 @@ export function questsForDay(day) {
       list = idx.slice(0, 5).map((i) => POOL[i]());
     } finally { Math.random = realRandom; }
   }
+  if (castleOpen) list.push(Q.throne());
   list = list.map((q) => ({ ...q, id: `d${day}-${q.id}`, reward: q.reward || { text: 'Nice one!' } }));
   list.push(royal(day, list.length));
   return list;
@@ -159,6 +167,7 @@ const SUNSET_GEM = { color: '#ff8c42', emissive: '#ff7a1a' };
 function defaultSave() {
   return {
     day: 1, ridesRidden: [], gems: [], completed: [], unlockedAccessories: [], lapsBest: {}, talkedTo: [],
+    royalKeys: 0, castleOpen: false,
     stats: { rideCount: 0, crashes: 0, laps: 0, perRide: {} },
     dayStats: defaultDayStats(),
   };
@@ -168,11 +177,14 @@ function defaultDayStats(lapsBest = {}) {
   const best = lapsBest.motorcycle;
   return {
     snacks: 0, squishes: 0, sparkles: 0, played: [], sits: [], slideCount: 0, weatherChanges: 0, rides: [], perRide: {}, rideCount: 0,
-    gems: [], warns: 0, thrown: 0, fastLap: 0, nightCoaster: 0, balloonTalks: [], talked: [], laps: 0, walked: 0,
+    gems: [], warns: 0, thrown: 0, fastLap: 0, nightCoaster: 0, balloonTalks: [], talked: [], laps: 0, walked: 0, throne: 0,
     lapTarget: best ? Math.max(8, Math.ceil(best) - 1) : 30,
   };
 }
 
+// Where the player stands at the keep's front door when the world has no `castleDoor` landmark yet:
+// the keep's front face is at z ≈ -86 (CASTLE.z -91, keep centre -94, half depth 8), inside the courtyard.
+const CASTLE_DOOR_FALLBACK = [0, -83.4];
 const _d = new THREE.Vector3();
 const gemGeo = new THREE.OctahedronGeometry(0.5, 0);
 const ringGeo = new THREE.TorusGeometry(0.55, 0.05, 8, 24);
@@ -192,10 +204,13 @@ export class Quests {
     this.group.name = 'quests:gems';
     this._lastProgress = {};
     this._saveTimer = null;
-    this._defsDay = 0; this._defs = QUEST_DEFS;
+    this._defsDay = 0; this._defs = QUEST_DEFS; this._defsCastle = false;
     this.sleeping = false;
     this.items = new Items(game);  // shops + hand-held item actions (src/quests/items.js)
     this.load();
+    // ?keys=N — debug: start with N royal keys (saved, so the castle door can be tested without 5 real days)
+    const keys = Number(game.params?.get?.('keys'));
+    if (Number.isFinite(keys) && game.params.get('keys') !== null) { this.state.royalKeys = Math.max(0, Math.min(99, Math.floor(keys))); this.save(); }
   }
 
   // ---------- public getters ----------
@@ -204,9 +219,19 @@ export class Quests {
   get gemsFound() { return this.state.gems.length; }
   get unlockedAccessories() { return this.state.unlockedAccessories; }
   get dayStats() { return this.state.dayStats; }
-  /** Quest defs for the current day. */
+  /** Royal keys earned so far (one per day on which every quest was completed). Five open the castle. */
+  get royalKeys() { return this.state.royalKeys; }
+  get keysTotal() { return KEYS_TOTAL; }
+  /** True once the castle keep's door has been opened (saved; the world reads it at build). */
+  get castleOpen() { return !!this.state.castleOpen; }
+  /** Quest defs for the current day (re-generated when the day or the castle state changes). */
   dayQuests() {
-    if (this._defsDay !== this.state.day) { this._defsDay = this.state.day; this._defs = questsForDay(this.state.day); }
+    const castleOpen = this.castleOpen;
+    if (this._defsDay !== this.state.day || this._defsCastle !== castleOpen) {
+      this._defsDay = this.state.day; this._defsCastle = castleOpen;
+      this._defs = questsForDay(this.state.day, { castleOpen });
+      for (const q of this._defs) if (this._lastProgress[q.id] == null) this._lastProgress[q.id] = this.progressOf(q);
+    }
     return this._defs;
   }
   questById(id) { return this.dayQuests().find((q) => q.id === id) || QUEST_DEFS.find((q) => q.id === id) || null; }
@@ -244,6 +269,10 @@ export class Quests {
         s.dayStats = { ...defaultDayStats(s.lapsBest), ...((d.dayStats && typeof d.dayStats === 'object') ? d.dayStats : {}) };
         for (const k of ['played', 'sits', 'rides', 'gems', 'balloonTalks', 'talked']) if (!Array.isArray(s.dayStats[k])) s.dayStats[k] = [];
         if (!s.dayStats.perRide || typeof s.dayStats.perRide !== 'object') s.dayStats.perRide = {};
+        // royal keys: saved from round 3 on; older saves derive them from the "complete every quest" days done
+        const derived = s.completed.filter((id) => id === 'royal' || /^d\d+-royal$/.test(id)).length;
+        s.royalKeys = Number.isFinite(Number(d.royalKeys)) && d.royalKeys !== undefined ? Math.max(0, Math.floor(Number(d.royalKeys))) : derived;
+        s.castleOpen = !!d.castleOpen;
         this.state = s;
         this.hadSave = true;
       }
@@ -257,6 +286,7 @@ export class Quests {
     const data = {
       day: s.day, ridesRidden: s.ridesRidden, gems: s.gems, completed: s.completed, unlockedAccessories: s.unlockedAccessories,
       lapsBest: s.lapsBest, talkedTo: s.talkedTo, stats: s.stats, dayStats: s.dayStats,
+      royalKeys: s.royalKeys, castleOpen: !!s.castleOpen,
     };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) { console.warn('[quests] failed to save', e); }
   }
@@ -273,6 +303,10 @@ export class Quests {
     this.placeDayGems();
     this.items.start();
     g.items = this.items;
+    this.registerCastleDoor();
+    ev.on('game:start', () => { this.registerCastleDoor(); this.emitKeys(); });
+    // the world may have been built before the save was read: start with the door open when it already is
+    if (this.castleOpen) g.world?.castle?.setDoorOpen?.(true, false);
     const ds = () => this.state.dayStats;
     ev.on('ride:complete', ({ ride }) => this.onRideComplete(ride));
     ev.on('ride:exit', ({ ride }) => { if (ride === 'teacups') this._teacupExitAt = g.time; });
@@ -304,7 +338,7 @@ export class Quests {
     ev.on('snack:eat', () => { ds().snacks++; this.changed(); });
     ev.on('item:use', ({ item }) => { if (item === 'needoh') ds().squishes++; else if (item === 'wand') ds().sparkles++; else return; this.changed(); });
     ev.on('play', ({ id } = {}) => { uniq(ds().played, id || `thing-${ds().played.length}`); this.changed(); });
-    ev.on('seat:sit', ({ id } = {}) => { uniq(ds().sits, id || `seat-${ds().sits.length}`); this.changed(); });
+    ev.on('seat:sit', ({ id } = {}) => { uniq(ds().sits, id || `seat-${ds().sits.length}`); if (/^throne/i.test(id || '')) ds().throne = 1; this.changed(); });
     ev.on('slide:end', ({ id } = {}) => { if (!id || /lookout|flamingo/i.test(id)) ds().slideCount++; this.changed(); });
     ev.on('weather:change', () => { if (!g.started) return; ds().weatherChanges++; this.changed(); });
     ev.on('lifeguard:warn', () => { ds().warns++; this.changed(); });
@@ -364,6 +398,84 @@ export class Quests {
     for (const acc of q.reward.accessories || []) this.unlock(acc);
     if (q.reward.text && !q.reward.accessories?.length) setTimeout(() => g.ui.toast?.(q.reward.text, q.reward.day ? 5000 : 2600), 900);
     if (q.royalDay && q.royalDay > 1) g.ui.celebrate?.(`Day ${q.royalDay} complete! 🌙`);
+    // every "complete every quest" day (day 1's `royal` included) earns one royal key
+    if (q.id === 'royal' || q.royalDay) this.addKey(q.id === 'royal' ? 0 : 1800);
+  }
+
+  // ---------- royal keys + the castle ----------
+  /** +1 royal key (toast after `delayMs` so it lands after the day-complete toast). Five keys open the castle door. */
+  addKey(delayMs = 0) {
+    const g = this.game;
+    this.state.royalKeys = (this.state.royalKeys || 0) + 1;
+    const n = this.state.royalKeys;
+    this.emitKeys();
+    this.scheduleSave();
+    const text = n >= KEYS_TOTAL && !this.castleOpen
+      ? `🔑 Royal Key ${n}/${KEYS_TOTAL}! You can open the castle door now!`
+      : n > 1 ? `🔑 Royal Key ${Math.min(n, KEYS_TOTAL)}/${KEYS_TOTAL} earned! ${Math.max(0, KEYS_TOTAL - n)} more to open the castle.` : null;
+    if (text) setTimeout(() => g.ui.toast?.(text, 4200), delayMs);
+  }
+  /** Debug / tests: set the key count directly. */
+  setKeys(n) { this.state.royalKeys = Math.max(0, Math.floor(n) || 0); this.emitKeys(); this.scheduleSave(); }
+  emitKeys() {
+    const g = this.game;
+    g.ui?.setKeys?.(this.state.royalKeys, KEYS_TOTAL);
+    g.events.emit('keys:change', { keys: this.state.royalKeys, total: KEYS_TOTAL, castleOpen: this.castleOpen });
+  }
+  /** The keep's front door: locked until 5 royal keys; registered at world.landmarks.castleDoor. */
+  registerCastleDoor() {
+    const g = this.game;
+    if (this.castleDoor || !g.world) return;
+    const lm = g.world.landmarks || {};
+    let position;
+    if (lm.castleDoor && typeof lm.castleDoor.x === 'number') position = new THREE.Vector3(lm.castleDoor.x, lm.castleDoor.y ?? 0, lm.castleDoor.z);
+    else { const [x, z] = CASTLE_DOOR_FALLBACK; position = new THREE.Vector3(x, g.world.getGroundHeight?.(x, z, 1) ?? 0, z); }
+    this.castleDoor = {
+      position, radius: 3.6, kind: 'misc', id: 'castleDoor',
+      get label() { return 'Castle Door'; },
+      onInteract: () => this.openCastleDoor(),
+      enabled: () => g.player?.state === 'walk' && !this._doorBusy,
+    };
+    Object.defineProperty(this.castleDoor, 'sub', { get: () => (this.castleOpen ? 'the throne room awaits' : `🔑 ${Math.min(this.state.royalKeys, KEYS_TOTAL)}/${KEYS_TOTAL} royal keys`) });
+    g.interactables.push(this.castleDoor);
+  }
+  async openCastleDoor() {
+    const g = this.game, n = this.state.royalKeys;
+    if (this._doorBusy) return;
+    this._doorBusy = true;
+    try {
+      if (this.castleOpen) {
+        g.world?.castle?.setDoorOpen?.(true);
+        g.audio?.play?.('click');
+        g.ui.toast?.('The castle is yours — go on in! 👑');
+        return;
+      }
+      if (n < KEYS_TOTAL) {
+        const left = KEYS_TOTAL - n;
+        g.audio?.play?.('click');
+        await (g.ui.dialogue?.([`Locked. 🔑 ${left} more royal key${left === 1 ? '' : 's'} — one for every day you finish all your quests.`], { speaker: 'Castle Door', color: '#6b4a2b' }) ?? Promise.resolve());
+        return;
+      }
+      await this.openCastle();
+    } finally { this._doorBusy = false; }
+  }
+  /** Five keys: swing the door open, fanfare, title card, crown unlock, and the throne quest joins the day list. */
+  async openCastle() {
+    const g = this.game;
+    if (this.castleOpen) return;
+    this.state.castleOpen = true;
+    this.save();
+    const castle = g.world?.castle;
+    if (castle?.setDoorOpen) castle.setDoorOpen(true); else g.audio?.play?.('door');   // the world plays 'door' via castle:door
+    g.audio?.play?.('fanfare');
+    g.events.emit('castle:open', { keys: this.state.royalKeys });
+    this.unlock('crown');
+    this.dayQuests();   // regenerate with the throne quest
+    this.refreshObjective();
+    this.emitKeys();
+    await (g.ui.titleCard?.('The castle is yours!', 'The throne room is open — go sit on a throne! 👑', 2800) ?? Promise.resolve());
+    g.ui.toast?.('New quest: Sit on a throne', 3600);
+    this.changed();
   }
 
   unlock(accessory) {
@@ -379,7 +491,7 @@ export class Quests {
   objectiveText() {
     const q = this.activeQuest();
     const day = this.state.day;
-    if (!q) return day === 1 ? 'All quests complete — you hold the Royal Keys! Sleep at home for Day 2' : `Day ${day} done — sleep in your bed for Day ${day + 1}`;
+    if (!q) return day === 1 ? 'All quests complete — you earned a Royal Key! Sleep at home for Day 2' : `Day ${day} done — sleep in your bed for Day ${day + 1}`;
     const { progress, total } = this.progress(q.id);
     return `Day ${day} · ${this.title(q)} — ${progress}/${total}`;
   }

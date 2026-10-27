@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { Ride } from './Ride.js';
 import { makeSign } from './shared/track.js';
+import { makeLightCuller } from '../world/builder.js';
 import { coloredMesh, mergeParts, canvasTexture, ParticleBurst, wrapAngle, approach, segDist2 } from './shared/vehicle.js';
 
 const HALF = 25;           // arena interior half-size (inner wall faces at ±HALF)
@@ -35,7 +36,7 @@ class Trail {
     this.geo.setIndex(new THREE.BufferAttribute(idx, 1));
     this.geo.setDrawRange(0, 0);
     this.mesh = new THREE.Mesh(this.geo, new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.9, toneMapped: false }));
-    this.mesh.frustumCulled = false;
+    this.geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, TRAIL_H / 2, 0), HALF * 1.5);   // the ribbon never leaves the arena
     this.mesh.userData.noOcclude = true;   // zero-thickness ribbon: never pulls the camera in
     parent.add(this.mesh);
   }
@@ -201,6 +202,7 @@ export class LightCycle extends Ride {
     // --- lights for the neon mood ---
     const l1 = new THREE.PointLight(CYAN, 90, 45, 2); l1.position.set(-10, 6, -8); g.add(l1);
     const l2 = new THREE.PointLight(MAGENTA, 90, 45, 2); l2.position.set(10, 6, 10); g.add(l2);
+    this.cullLights = makeLightCuller(this.game, [l1, l2]);   // the neon only lights the grid while the player is near
 
     // --- player cycle ---
     const pc = buildCycle(YELLOW);
@@ -409,5 +411,6 @@ export class LightCycle extends Ride {
     for (const a of this.ais) this.updateAI(a, dt);
     this.updateBits(t);
     this.particles.update(dt);
+    this.cullLights?.();
   }
 }

@@ -9,6 +9,7 @@
     const s = r.station; g.player.teleport(s.x, g.world.getGroundHeight(s.x, s.z, 1), s.z);
     step(10);
     g.player.boardRide(r);
+    if (r.holding) r.pickSeat();          // seat menus never resolve inside this synchronous loop: take the default seat
     if (r.setMode) { r.setMode('wild'); g.ui.closeChoose?.(); }
     let frames = 0, maxY = -1e9, minY = 1e9, samples = [];
     const limit = (r.duration || 60) * 60 + 600;

@@ -4,7 +4,7 @@ export class Input {
   constructor() {
     this.keys = new Set();
     this.virtual = { x: 0, y: 0 };      // joystick, -1..1 (x right, y forward)
-    this.virtualButtons = new Set();     // 'jump' | 'interact' | 'exit' | 'boost'
+    this.virtualButtons = new Set();     // 'jump' | 'interact' | 'exit' | 'boost' | 'drop'
     this.pressedThisFrame = new Set();   // one-shot actions, cleared each frame
     this.lookDelta = { x: 0, y: 0 };     // accumulated mouse/touch look delta
     this.enabled = true;
@@ -32,9 +32,9 @@ export class Input {
   }
   get jump() { return this.keys.has('Space') || this.virtualButtons.has('jump'); }
   get boost() { return this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || this.virtualButtons.has('boost'); }
-  // one-shot: true only on the frame the key went down
+  // one-shot: true only on the frame the key went down ('drop' = Q: toss what you're holding, see quests/items.js)
   justPressed(action) {
-    const map = { interact: ['KeyE', 'Enter'], exit: ['KeyX', 'Escape'], jump: ['Space'], boost: ['ShiftLeft'] };
+    const map = { interact: ['KeyE', 'Enter'], exit: ['KeyX', 'Escape'], jump: ['Space'], boost: ['ShiftLeft'], drop: ['KeyQ'] };
     if (this.pressedThisFrame.has(`virtual:${action}`)) return true;
     return (map[action] || []).some((c) => this.pressedThisFrame.has(c));
   }

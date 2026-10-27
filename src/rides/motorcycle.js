@@ -293,6 +293,7 @@ export class Motorcycle extends Ride {
     // --- station / colliders ---
     g.updateMatrixWorld(true);
     this.station.copy(g.localToWorld(new THREE.Vector3(23, 0, 25.5)));
+    this.crowdCentre = g.localToWorld(new THREE.Vector3(0, 2, 26.9));   // grandstand middle (world), for the bounce cut-off
     this.tagline = 'Full throttle! 3 laps, hit the ramps, SHIFT to boost';
     // perimeter fence (1.2 m tall boxes: stops walkers, stays under the ride camera's sight line)
     this.addBoxCollider(new THREE.Vector3(-27, 0.6, -1.75), new THREE.Vector3(0.6, 1.2, 50.5));
@@ -452,7 +453,9 @@ export class Motorcycle extends Ride {
       m.glowMat.emissiveIntensity = 2.5 + (b.boostT > 0 ? 1.5 : 0);
     }
     for (const a of this.ais) this.updateAI(a, dt, t);
-    // bouncing crowd
+    // bouncing crowd (150 matrices re-uploaded a frame: only while the player is near enough to see them hop)
+    const player = this.game.player;
+    if (player && player.position.distanceTo(this.crowdCentre) > 80) return;
     const cb = this.crowdBase;
     for (let i = 0; i < cb.length; i++) {
       const p = cb[i], hop = Math.max(0, Math.sin(t * p.rate + p.phase)) * 0.45;

@@ -11,17 +11,80 @@ import { Quests } from './quests/quests.js';
 import { GameAudio } from './audio/audio.js';
 import { UI } from './ui/ui.js';
 import { showAvatarCreator } from './ui/creator.js';
-import { loadSettings } from './core/settings.js';
+import { loadSettings, QUALITIES } from './core/settings.js';
 import { createNet } from './net/net.js';
 
 const params = new URLSearchParams(location.search);
+const settings = loadSettings();   // park name + princess hosts + weather + quality (see core/settings.js)
+
+// ---------------------------------------------------------------- graphics quality / adaptive resolution
+// Tiers cap the device pixel ratio and pick the sun shadow map (sky.js). 'auto' = medium on touch/mobile devices
+// (iPad 2020 target), high on desktop. On top of the tier, the adaptive scaler lowers the render resolution while
+// frames stay slow and raises it again (never above the tier cap) once they are fast. Antialias (MSAA) is a
+// renderer-creation option, so the tier is resolved before the renderer exists.
+const TIERS = {
+  low:    { ratio: 1.0, shadow: 0,    soft: false, antialias: true },
+  medium: { ratio: 1.5, shadow: 1024, soft: false, antialias: true },
+  high:   { ratio: 2.0, shadow: 2048, soft: true,  antialias: true },
+};
+const isMobileDevice = () => {
+  try {
+    if (navigator.maxTouchPoints > 0) return true;                       // iPadOS Safari reports a Mac UA but has touch points
+    if (/iPad|iPhone|iPod|Android|Mobile|Tablet/i.test(navigator.userAgent)) return true;
+    return window.matchMedia?.('(pointer: coarse)').matches || false;
+  } catch { return false; }
+};
+const perf = {
+  requested: QUALITIES.includes(params.get('quality')) ? params.get('quality') : settings.quality,
+  tier: 'high', cap: 2, ratio: 2, min: 0.6, step: 0.15,
+  ema: 16.7, slow: 0, fast: 0, grace: 3, upWait: 5, frames: 0,
+  resolve(name) { return name === 'auto' || !TIERS[name] ? (isMobileDevice() ? 'medium' : 'high') : name; },
+  /** Apply a tier now (name may be 'auto'). Called at boot and on settings:change. */
+  setTier(name) {
+    this.requested = QUALITIES.includes(name) ? name : 'auto';
+    this.tier = this.resolve(this.requested);
+    const t = TIERS[this.tier];
+    this.cap = Math.min(window.devicePixelRatio || 1, t.ratio);
+    this.setRatio(this.cap);
+    this.slow = this.fast = 0; this.grace = Math.max(this.grace, 1); this.upWait = 5;
+    game.world?.sky?.setShadowQuality?.(t.shadow, t.soft);
+    return this.tier;
+  },
+  setRatio(r) {
+    this.ratio = Math.round(r * 100) / 100;
+    renderer.setPixelRatio(this.ratio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  },
+  /** Frame-time EMA based scaler. `raw` = unclamped seconds since the previous frame. */
+  update(raw) {
+    const ms = raw * 1000;
+    this.frames++;
+    if (ms > 1000) return;                                 // a real stall (tab switch, shader compile): never count it
+    this.ema += (Math.min(ms, 250) - this.ema) * 0.1;
+    if (this.grace > 0) { this.grace -= raw; this.slow = this.fast = 0; return; }
+    if (this.ema > 24) {
+      this.fast = 0; this.slow += raw;
+      if (this.slow >= 2 && this.ratio > this.min) {
+        this.setRatio(Math.max(this.min, this.ratio - this.step));
+        this.slow = 0; this.ema = 20;                       // give the new size a moment before judging it again
+        this.upWait = Math.min(30, this.upWait * 2);        // be slower to climb back each time we had to drop
+      }
+    } else if (this.ema < 18) {                           // keeping vsync (16.7 ms at 60 Hz): fast
+      this.slow = 0; this.fast += raw;
+      if (this.fast >= this.upWait && this.ratio < this.cap) { this.setRatio(Math.min(this.cap, this.ratio + this.step)); this.fast = 0; this.ema = 20; }
+    } else { this.slow = Math.max(0, this.slow - raw); this.fast = 0; }
+  },
+  stats() { return { fps: Math.round(1000 / this.ema), ms: Math.round(this.ema * 10) / 10, ratio: this.ratio, cap: this.cap, tier: this.tier, requested: this.requested, frames: this.frames }; },
+};
+perf.tier = perf.resolve(perf.requested);
 
 const canvas = document.getElementById('game');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: TIERS[perf.tier].antialias, powerPreference: 'high-performance' });
+perf.cap = Math.min(window.devicePixelRatio || 1, TIERS[perf.tier].ratio);
+renderer.setPixelRatio(perf.cap); perf.ratio = perf.cap;
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.enabled = TIERS[perf.tier].shadow > 0;
+renderer.shadowMap.type = TIERS[perf.tier].soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
@@ -42,9 +105,13 @@ const game = {
   player: null, world: null, quests: null, audio: null, ui: null,
   params,
   started: false,
-  settings: loadSettings(),   // park name + princess hosts (see core/settings.js)
+  settings,                   // park name + princess hosts + weather + quality (see core/settings.js)
+  perf,                       // graphics tier + adaptive resolution: perf.stats(), perf.setTier(name)
+  overlay: false,             // true while an opaque full-screen UI (dressing room) hides the 3D view: skip rendering
 };
 window.__game = game; // for tests / debugging
+document.addEventListener('visibilitychange', () => { perf.grace = 3; perf.ema = 16.7; perf.slow = perf.fast = 0; });
+game.events.on('settings:change', (s) => { if (s?.quality && s.quality !== perf.requested) perf.setTier(s.quality); });
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -58,6 +125,7 @@ async function boot() {
   game.world = new World(game);
   game.world.build();
   scene.add(game.world.group);
+  game.world.sky?.setShadowQuality?.(TIERS[perf.tier].shadow, TIERS[perf.tier].soft);
 
   game.rides = createRides(game);
   for (const ride of game.rides) {
@@ -107,7 +175,9 @@ function startGame(config) {
 
 const _d = new THREE.Vector3();
 function loop() {
-  const dt = Math.min(game.clock.getDelta(), 0.05);
+  const raw = game.clock.getDelta();
+  perf.update(raw);
+  const dt = Math.min(raw, 0.05);
   game.time += dt;
   const t = game.time;
   const player = game.player;
@@ -133,7 +203,7 @@ function loop() {
   game.audio.update?.(dt, t);
   game.net?.update(dt, t);
   game.input.endFrame();
-  renderer.render(scene, camera);
+  if (!game.overlay) renderer.render(scene, camera);   // the dressing room covers the canvas: its own preview gets the GPU
 }
 
 boot().catch((e) => { console.error(e); document.body.innerHTML = `<pre style="color:#fff;padding:20px">Failed to start: ${e.stack || e}</pre>`; });

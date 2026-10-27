@@ -213,7 +213,7 @@ export class Player {
     camera.position.lerp(_p.set(cx, Math.max(cy, minY), cz), Math.min(1, dt * rate));
     camera.lookAt(target);
     // squeezed against a wall / counter: go (almost) first person instead of showing the inside of the avatar's head
-    this.group.visible = dist > 1.4;
+    this.group.visible = dist > 1.7;
   }
 
   // Pull the camera in when a solid collider (or a world-declared camera blocker) sits between it and the player.

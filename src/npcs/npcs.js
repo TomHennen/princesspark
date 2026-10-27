@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { buildAvatar, SKIN_TONES } from '../core/avatar.js';
 import { DEFAULT_SETTINGS } from '../core/settings.js';
-import { getDialogue, getAmbientDialogue, walkDialogue } from './dialogue.js';
+import { getDialogue, getAmbientDialogue, walkDialogue, getBopLine } from './dialogue.js';
 
 /** Mix a hex colour toward white by `amt` (0..1). */
 export function lighten(hex, amt = 0.25) {
@@ -58,6 +58,10 @@ function princessDef(id, settings) {
   };
 }
 
+// Playground spinner (world/playground.js MX/MZ) — the Pal idles ~4.5 m south-west of it, facing the hub.
+const SPINNER_X = 31, SPINNER_Z = 83;
+const PAL_WALK_SPEED = 3;
+
 const AMBIENT_DEFS = [
   {
     id: 'guide', name: 'Park Guide', sub: 'Ask me anything', color: '#5bb0ff', ambient: true,
@@ -76,6 +80,14 @@ const AMBIENT_DEFS = [
     position: [12, 0, -45], facing: Math.PI / 2,
     avatar: { name: 'Lifeguard', skin: SKIN_TONES[4], hairStyle: 'curly', hairColor: '#2b1a0e', outfit: 'casual',
       topColor: '#e74c3c', bottomColor: '#ffffff', shoeColor: '#f9d71c', accessory: 'cape', accessoryColor: '#e74c3c' },
+  },
+  {
+    // Playground Pal: teen attendant in a staff polo by the spinner; walks over and pushes it on 'spinner:push:start'
+    // (the pusher spot the world sends is just south of the spinner, so the Pal idles a few metres south-west of it)
+    id: 'pal', name: 'Playground Pal', sub: 'Spinner pushes!', color: '#7bd94a', ambient: true, attendant: true,
+    position: [SPINNER_X - 3.4, 0, SPINNER_Z + 3.2], facing: Math.atan2(3.4, -3.2),
+    avatar: { name: 'Pal', skin: SKIN_TONES[0], hairStyle: 'curly', hairColor: '#d8a35a', outfit: 'casual',
+      topColor: '#7bd94a', bottomColor: '#3b5bdb', shoeColor: '#ffffff', accessory: 'none', accessoryColor: '#ffffff' },
   },
 ];
 
@@ -158,26 +170,35 @@ function makeNameTag(name, color, crown) {
   return sprite;
 }
 
-// Comic speech bubble ("NO RUNNING!") — white bubble, red text, shown briefly above a shouting lifeguard.
-function makeShoutBubble(text) {
+// Comic speech bubble ("NO RUNNING!") — white bubble, coloured text, shown briefly above a shouting NPC.
+// sprite.userData.redraw(text, color) swaps the text (lifeguards shout different things at runners and boppers).
+function makeShoutBubble(text, color = '#e74c3c') {
   const w = 512, h = 192;
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath(); ctx.roundRect(16, 10, w - 32, h - 60, 40); ctx.fill();
-  ctx.beginPath(); ctx.moveTo(w / 2 - 28, h - 52); ctx.lineTo(w / 2 + 28, h - 52); ctx.lineTo(w / 2, h - 8); ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 8;
-  ctx.beginPath(); ctx.roundRect(16, 10, w - 32, h - 60, 40); ctx.stroke();
-  ctx.font = 'bold 66px "Trebuchet MS", "Segoe UI", Arial, sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#e74c3c';
-  ctx.fillText(text, w / 2, (h - 50) / 2 + 4);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  const redraw = (text, color = '#e74c3c') => {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.roundRect(16, 10, w - 32, h - 60, 40); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(w / 2 - 28, h - 52); ctx.lineTo(w / 2 + 28, h - 52); ctx.lineTo(w / 2, h - 8); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.roundRect(16, 10, w - 32, h - 60, 40); ctx.stroke();
+    let size = 66;
+    ctx.font = `bold ${size}px "Trebuchet MS", "Segoe UI", Arial, sans-serif`;
+    while (size > 28 && ctx.measureText(text).width > w - 80) { size -= 4; ctx.font = `bold ${size}px "Trebuchet MS", "Segoe UI", Arial, sans-serif`; }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = color;
+    ctx.fillText(text, w / 2, (h - 50) / 2 + 4);
+    tex.needsUpdate = true;
+  };
+  redraw(text, color);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false }));
   sprite.scale.set(3.4, 3.4 * (h / w), 1);
   sprite.renderOrder = 10;
   sprite.visible = false;
+  sprite.userData.redraw = redraw;
   return sprite;
 }
 
@@ -226,6 +247,7 @@ class NPC {
     this.anim = 'idle';
     this.lookAt = null;       // Vector3 to face instead of the base facing (set by shout())
     this.lookUntil = 0;
+    this.bopStart = -1;       // game.time when the last bop landed (wobble runs BOP_WOBBLE_S from there)
 
     this.interactable = {
       position: this.group.position, radius: 3.5, kind: 'npc', id: this.id,
@@ -274,6 +296,38 @@ class NPC {
     }
   }
 
+  /**
+   * Bopped with a balloon / Needoh (quests/items.js): a ~0.6 s stagger-wobble (tilt + squash of the whole group,
+   * the idle anim keeps running underneath), turn to the player, and a one-liner toast in this NPC's voice.
+   */
+  bopped(item = 'balloon') {
+    const g = this.game, t = g.time || 0;
+    this.bopStart = t;
+    this.lookUntil = t + 2.5;
+    this.nextWaveAt = t + 4;
+    if (typeof this.avatar.bopped === 'function') { try { this.avatar.bopped(); } catch {} }
+    const line = this.bopLine(item);
+    if (line) g.ui?.toast?.(`${this.name}: ${line}`, 3000);
+    this.onBopped?.(t, item);
+    return Promise.resolve();
+  }
+  bopLine(item) { return getBopLine(this.id, this.game.settings, this.game.player?.config?.name || 'Explorer', item); }
+  applyBopWobble(t) {
+    const gp = this.group;
+    const k = this.bopStart >= 0 ? (t - this.bopStart) / BOP_WOBBLE_S : 2;
+    if (k >= 1) {
+      if (this.bopStart >= 0) { gp.rotation.x = gp.rotation.z = 0; gp.scale.set(1, 1, 1); this.bopStart = -1; }
+      return;
+    }
+    // the avatar rig may play its own stagger (avatar.bopped()); then the group only adds a light squash
+    const own = typeof this.avatar.bopped === 'function' ? 0.45 : 1;
+    const fade = 1 - k, w = Math.sin(k * Math.PI * 3.5) * fade;
+    gp.rotation.z = w * 0.28 * own;              // side-to-side stagger
+    gp.rotation.x = -Math.sin(k * Math.PI) * 0.12 * fade * own;   // knocked back a touch
+    const sq = Math.sin(k * Math.PI) * 0.12 * own;
+    gp.scale.set(1 + sq, 1 - sq, 1 + sq);
+  }
+
   update(dt, t) {
     const player = this.game.player;
     let targetYaw = this.baseFacing;
@@ -296,6 +350,80 @@ class NPC {
     this.anim = t < this.waveUntil ? 'wave' : 'idle';
     this.avatar.setAnim(this.anim, t + this.group.position.x * 0.37);
     this.tag.position.y = this.tagBaseY + Math.sin(t * 2 + this.group.position.x) * 0.06;
+    this.applyBopWobble(t);
+  }
+}
+const BOP_WOBBLE_S = 0.6;
+
+/**
+ * Playground Pal: stands by the spinner. On `spinner:push:start { position, duration }` (world/playground.js) walks
+ * to `position` at PAL_WALK_SPEED, faces the spinner and loops a push animation until `spinner:push:end`, then
+ * walks home. States: 'idle' | 'walk' | 'push' | 'return'.
+ */
+class Attendant extends NPC {
+  constructor(game, def) {
+    super(game, def);
+    this.home = this.group.position.clone();
+    this.mode = 'idle';
+    this.target = null;
+    this.spinner = new THREE.Vector3(SPINNER_X, 0, SPINNER_Z);
+    const lm = game.world?.landmarks;
+    if (lm?.spinner?.x !== undefined) this.spinner.set(lm.spinner.x, 0, lm.spinner.z);
+    this.pushUntil = 0;
+    game.events.on('spinner:push:start', (e = {}) => this.startPush(e));
+    game.events.on('spinner:push:end', () => this.endPush());
+  }
+  startPush({ position, duration } = {}) {
+    const g = this.game;
+    const p = position && typeof position.x === 'number' ? position : { x: this.spinner.x, y: 0, z: this.spinner.z + 2.2 };
+    this.target = new THREE.Vector3(p.x, p.y ?? 0, p.z);
+    this.mode = 'walk';
+    this.pushUntil = (g.time || 0) + (Number(duration) || 8) + 4;   // safety: stop pushing even if no :end arrives
+    this.waveUntil = 0;
+  }
+  endPush() {
+    if (this.mode === 'idle') return;
+    this.target = this.home.clone();
+    this.mode = 'return';
+  }
+  /** Step toward this.target; returns true on arrival. Faces the direction of travel. */
+  walkTo(dt, t) {
+    const gp = this.group.position, to = this.target;
+    const dx = to.x - gp.x, dz = to.z - gp.z, d = Math.hypot(dx, dz);
+    if (d < 0.12) { gp.x = to.x; gp.z = to.z; return true; }
+    const step = Math.min(d, PAL_WALK_SPEED * dt);
+    gp.x += (dx / d) * step; gp.z += (dz / d) * step;
+    gp.y = Math.max(this.game.world?.getGroundHeight?.(gp.x, gp.z, gp.y + 1) ?? 0, 0);
+    const yaw = Math.atan2(dx, dz);
+    let diff = yaw - this.group.rotation.y; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    this.group.rotation.y += diff * Math.min(1, dt * 10);
+    this.avatar.setAnim('walk', t, 1.1);
+    return false;
+  }
+  update(dt, t) {
+    if (this.mode === 'idle') { super.update(dt, t); return; }
+    this.tag.position.y = this.tagBaseY + Math.sin(t * 2) * 0.06;
+    if (this.mode === 'walk') {
+      if (this.walkTo(dt, t)) this.mode = 'push';
+    } else if (this.mode === 'push') {
+      // face the spinner's hub and shove: both arms out front, a lean-in bob (on top of the wave pose's timing)
+      const dx = this.spinner.x - this.group.position.x, dz = this.spinner.z - this.group.position.z;
+      const yaw = Math.atan2(dx, dz);
+      let diff = yaw - this.group.rotation.y; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+      this.group.rotation.y += diff * Math.min(1, dt * 8);
+      this.avatar.setAnim('idle', t);
+      const parts = this.avatar.parts, ph = Math.sin(t * 5);
+      if (parts?.armL && parts?.armR) {
+        parts.armL.rotation.x = parts.armR.rotation.x = -1.3 + ph * 0.45;
+        parts.armL.rotation.z = 0.25; parts.armR.rotation.z = -0.25;
+      }
+      if (parts?.torso) { parts.torso.rotation.x = 0.22 + ph * 0.12; }
+      if (parts?.legL && parts?.legR) { parts.legL.rotation.x = -0.35; parts.legR.rotation.x = 0.3; }
+      if (t > this.pushUntil) this.endPush();
+    } else if (this.mode === 'return') {
+      if (this.walkTo(dt, t)) { this.mode = 'idle'; this.group.rotation.y = this.baseFacing; }
+    }
+    this.applyBopWobble(t);
   }
 }
 
@@ -305,7 +433,7 @@ class Lifeguard extends NPC {
     super(game, def);
     this.gear = buildLifeguardGear();
     this.group.add(this.gear);
-    this.bubble = makeShoutBubble('NO RUNNING!');
+    this.bubble = makeShoutBubble('NO RUNNING!'); this.bubbleText = 'NO RUNNING!';
     this.bubble.position.y = this.tagBaseY + 1.1;
     this.group.add(this.bubble);
     this.shoutUntil = 0;
@@ -316,13 +444,16 @@ class Lifeguard extends NPC {
       this.interactable.radius = 4.5;
     }
   }
-  shout(t) {
+  shout(t, text = 'NO RUNNING!') {
     this.shoutUntil = t + 2.4;
     this.waveUntil = t + 2.4;          // arm up (the 'wave' pose)
     this.nextWaveAt = t + 8;
     this.lookUntil = t + 3;
+    if (text !== this.bubbleText) { this.bubbleText = text; this.bubble.userData.redraw?.(text); }
     this.bubble.visible = true;
   }
+  /** A bop gets the whistle treatment: comic bubble + arm up, on top of the wobble and the toast. */
+  onBopped(t) { this.shout(t, 'NO HORSEPLAY!'); this.game.audio?.play?.('whistle'); }
   update(dt, t) {
     super.update(dt, t);
     if (this.bubble.visible) {
@@ -379,7 +510,7 @@ class LifeguardPatrol {
 
 export function createNPCs(game) {
   const princesses = ['p1', 'p2'].map((id) => new NPC(game, princessDef(id, game.settings)));
-  const ambient = AMBIENT_DEFS.map((def) => (def.lifeguard ? new Lifeguard(game, def) : new NPC(game, def)));
+  const ambient = AMBIENT_DEFS.map((def) => (def.lifeguard ? new Lifeguard(game, def) : def.attendant ? new Attendant(game, def) : new NPC(game, def)));
   const poolGuards = lifeguardDefs(game).map((def) => new Lifeguard(game, def));
   const patrol = new LifeguardPatrol(game, [...poolGuards, ...ambient.filter((n) => n instanceof Lifeguard)]);
   const npcs = [...princesses, ...ambient, ...poolGuards, patrol];

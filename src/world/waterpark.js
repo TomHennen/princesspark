@@ -22,9 +22,8 @@ export function buildWaterPark(ctx) {
   seating(wp);
   toys(wp);
 
-  const mesh = B.build(world.mat.vc);
-  mesh.castShadow = true; mesh.receiveShadow = true; mesh.name = 'waterpark';
-  world.group.add(mesh);
+  // one merged mesh per park grid cell (the wing straddles two), so the far end is culled instead of drawn and shadow-cast every frame
+  for (const mesh of B.buildGrid(world.mat.vc)) { mesh.castShadow = true; mesh.receiveShadow = true; mesh.name = 'waterpark'; world.group.add(mesh); }
 
   // palms + lamp posts for the wing (consumed by props.js palms()/lamps())
   for (const p of [[124, -67], [131, -68.5], [140, -67], [147, -66.5], [125, 21], [128, 41], [124, 61], [131, 79], [142, 81], [140, 55], [146, 23],
@@ -41,24 +40,10 @@ function gateAndFence({ world, B, sign }) {
     for (let z = z0 + 4; z < z1 - 1; z += 9) { B.box(C.white, 1.4, 2.8, 1.4, X, 0, z); B.sphere(BLUE, 0.4, X, 3.0, z); }
     world.addCollider(X, 1.6, mz, 1.4, 3.4, len);
   };
-  // cabanas flank the gate; the fence runs from them to the wing hedges
+  // changing rooms flank the gate; the fence runs from them to the wing hedges
   const cab = [gz - gh - 3.9, gz + gh + 3.9];
   wall(WING.minZ - 1, cab[0] - 2.6); wall(cab[1] + 2.6, WING.maxZ + 1);
-  for (const [i, zc] of cab.entries()) {
-    B.begin(X, 0, zc, 0);
-    B.box(C.cream, 5, 3.0, 5, 0, 0, 0);
-    for (let k = 0; k < 6; k++) B.box(k % 2 ? C.white : (i ? C.hotpink : BLUE), 5.6, 0.14, 0.95, 0, 3.0 + Math.abs(k - 2.5) * -0.12 + 0.3, -2.4 + k * 0.95, 0, 0);
-    B.box(C.white, 5.7, 0.12, 5.8, 0, 3.02, 0);                                   // roof slab under the striped boards
-    for (const k of [-1, 1]) B.box(C.white, 0.14, 0.14, 5.8, k * 2.8, 3.0, 0);   // fascia rails
-    B.cone(C.yellow, 0.4, 0.5, 0, 3.6, 0, 6); B.sphere(C.hotpink, 0.18, 0, 4.25, 0);
-    // door (curtain) on the west face, facing the approach path, and a porthole on the park side
-    B.box(i ? C.hotpink : BLUE, 0.1, 2.2, 1.2, -2.5, 0, 0.8); B.box(C.white, 0.12, 0.08, 1.3, -2.5, 2.2, 0.8);
-    B.add(new THREE.CylinderGeometry(0.5, 0.5, 0.12, 12), C.white, 2.52, 1.7, 0, 0, 0, Math.PI / 2); B.add(new THREE.CylinderGeometry(0.38, 0.38, 0.18, 12), BLUE2, 2.52, 1.7, 0, 0, 0, Math.PI / 2);
-    B.end();
-    world.addCollider(X, 1.6, zc, 5.2, 3.3, 5.2);
-  }
-  sign('CHANGING HUTS', X - 2.56, 2.65, cab[0] - 0.8, -Math.PI / 2, { w: 2.6, h: 0.5, bg: '#ffffff', fg: '#3aa8e0', stroke: '#1b5e20', border: '#3aa8e0' });
-  sign('CHANGING HUTS', X - 2.56, 2.65, cab[1] - 0.8, -Math.PI / 2, { w: 2.6, h: 0.5, bg: '#ffffff', fg: '#ff6fb5', stroke: '#1b5e20', border: '#ff6fb5' });
+  for (const [i, zc] of cab.entries()) changingRoom({ world, B, sign }, X, zc, i);
   // gate arch: striped pillars, a blue beam, wave crests and a flamingo on each pillar top
   for (const z of [gz - gh - 0.9, gz + gh + 0.9]) {
     for (let k = 0; k < 7; k++) B.box(k % 2 ? C.white : BLUE, 1.6, 1.0, 1.6, X, k, z);
@@ -79,6 +64,69 @@ function gateAndFence({ world, B, sign }) {
   B.cyl(C.dark, 0.03, 0.03, 0.7, X, 5.4, gz - 2.3, 4); B.cyl(C.dark, 0.03, 0.03, 0.7, X, 5.4, gz + 2.3, 4);
   B.cyl(C.white, 0.06, 0.08, 2.6, X - 4.5, 0, gz + 6.3, 6);
   sign('SWIMSUITS ONLY', X - 4.56, 2.3, gz + 6.3, -Math.PI / 2, { w: 2.2, h: 0.7, bg: '#ffffff', fg: '#3aa8e0', stroke: '#1b5e20', border: '#ff6fb5' });
+}
+
+// ---------------- changing room: a walk-in hut (hollow, door gap on the west face) with a curtain, bench, hooks,
+// mirror and rug. The first hut is the "Changing Room" interactable (ui.openChangingRoom) + world.landmarks.changingRoom.
+function changingRoom({ world, B, sign }, X, zc, i) {
+  const game = world.game, accent = i ? C.hotpink : BLUE, S = 5, H = 3.0, T = 0.25, DZ = 0.8, DW = 1.4, DH = 2.2;
+  const w = (lx, lz) => new THREE.Vector3(X + lx, 0, zc + lz);   // hut-local -> world (no yaw)
+  const col = (lx, cy, lz, sx, sy, sz) => world.addCollider(X + lx, cy, zc + lz, sx, sy, sz);
+  B.begin(X, 0, zc, 0);
+  // floor + shell: three full walls, the west wall split around the door gap (z DZ ± DW/2) with a header above it
+  B.box(C.cream, S, 0.08, S, 0, 0, 0); B.box(SAND, S - 2 * T, 0.02, S - 2 * T, 0, 0.08, 0);
+  B.box(C.cream, S, H, T, 0, 0, -S / 2 + T / 2); B.box(C.cream, S, H, T, 0, 0, S / 2 - T / 2); B.box(C.cream, T, H, S, S / 2 - T / 2, 0, 0);
+  const zA = -S / 2, zB = DZ - DW / 2, zC = DZ + DW / 2, zD = S / 2;
+  B.box(C.cream, T, H, zB - zA, -S / 2 + T / 2, 0, (zA + zB) / 2); B.box(C.cream, T, H, zD - zC, -S / 2 + T / 2, 0, (zC + zD) / 2);
+  B.box(C.cream, T, H - DH, DW, -S / 2 + T / 2, DH, DZ);
+  // striped roof boards, slab, fascia, finial (unchanged look from outside)
+  for (let k = 0; k < 6; k++) B.box(k % 2 ? C.white : accent, 5.6, 0.14, 0.95, 0, 3.0 + Math.abs(k - 2.5) * -0.12 + 0.3, -2.4 + k * 0.95, 0, 0);
+  B.box(C.white, 5.7, 0.12, 5.8, 0, 3.02, 0);
+  for (const k of [-1, 1]) B.box(C.white, 0.14, 0.14, 5.8, k * 2.8, 3.0, 0);
+  B.cone(C.yellow, 0.4, 0.5, 0, 3.6, 0, 6); B.sphere(C.hotpink, 0.18, 0, 4.25, 0);
+  // door frame + curtain: rod over the gap, a pleated curtain bunched against the +z jamb, a short valance
+  B.box(C.white, 0.14, DH + 0.1, 0.12, -S / 2, 0, zB - 0.06); B.box(C.white, 0.14, DH + 0.1, 0.12, -S / 2, 0, zC + 0.06);
+  B.add(new THREE.CylinderGeometry(0.03, 0.03, DW + 0.3, 6), C.white, -S / 2 - 0.12, DH + 0.02, DZ, Math.PI / 2, 0, 0);
+  for (let k = 0; k < 5; k++) B.box(k % 2 ? C.white : accent, 0.12, DH - 0.1, 0.09, -S / 2 - 0.1 + (k % 2) * 0.06, 0.02, zC - 0.05 - k * 0.075);
+  B.box(accent, 0.1, 0.22, DW + 0.2, -S / 2 - 0.1, DH - 0.2, DZ);
+  for (let k = 0; k < 6; k++) B.sphere(C.white, 0.05, -S / 2 - 0.16, DH - 0.2, DZ - DW / 2 + 0.1 + k * (DW / 5.4), 4, 3);
+  // porthole on the park side (east face)
+  B.add(new THREE.CylinderGeometry(0.5, 0.5, 0.12, 12), C.white, S / 2 + 0.02, 1.7, 0, 0, 0, Math.PI / 2); B.add(new THREE.CylinderGeometry(0.38, 0.38, 0.18, 12), BLUE2, S / 2 + 0.02, 1.7, 0, 0, 0, Math.PI / 2);
+  // inside: bench along the east wall, towel on it, hooks + hanging swimsuit/towel on the north wall, mirror on the
+  // south wall, a round rug, a basket of flip-flops
+  const bx = S / 2 - T - 0.35;
+  B.box(C.wood2, 0.6, 0.08, S - 2 * T - 0.4, bx, 0.45, 0); for (const z of [-1.8, 1.8]) B.box(C.wood2, 0.5, 0.45, 0.1, bx, 0.1, z);
+  B.box(C.white, 0.5, 0.06, 0.9, bx, 0.53, -1.2); B.box(accent, 0.5, 0.06, 0.9, bx, 0.59, -1.2);
+  const hz = -S / 2 + T;
+  for (let k = 0; k < 4; k++) { const x = -1.2 + k * 0.8; B.box(C.white, 0.7, 0.1, 0.06, x, 1.75, hz + 0.03); B.sphere(C.yellow, 0.06, x, 1.68, hz + 0.1, 5, 4); }
+  B.box(i ? BLUE : C.hotpink, 0.4, 0.55, 0.06, -1.2, 1.1, hz + 0.1); B.box(i ? BLUE : C.hotpink, 0.26, 0.3, 0.06, -1.2, 1.4, hz + 0.1);   // swimsuit on a hook
+  B.box(LIME, 0.3, 0.9, 0.06, 0.4, 0.8, hz + 0.1); B.box(C.white, 0.3, 0.1, 0.07, 0.4, 1.3, hz + 0.1);                              // towel
+  B.box(ORANGE, 0.34, 0.5, 0.06, 1.2, 1.2, hz + 0.1);                                                                                  // beach bag
+  const mz = S / 2 - T;
+  B.box(C.yellow, 1.3, 1.9, 0.08, -0.6, 0.5, mz - 0.04); B.box(C.glass, 1.1, 1.7, 0.1, -0.6, 0.6, mz - 0.05); B.box(ICE, 0.12, 1.3, 0.11, -0.95, 0.8, mz - 0.05);
+  B.cyl(accent, 1.0, 1.0, 0.03, -0.4, 0.1, -0.2, 18); B.cyl(C.white, 0.7, 0.7, 0.035, -0.4, 0.1, -0.2, 18); B.cyl(accent, 0.35, 0.35, 0.04, -0.4, 0.1, -0.2, 18);
+  B.cyl(C.wood2, 0.3, 0.26, 0.3, 1.0, 0.1, 1.6, 10); B.box(C.hotpink, 0.25, 0.05, 0.12, 0.92, 0.4, 1.55); B.box(LIME, 0.25, 0.05, 0.12, 1.08, 0.4, 1.66);
+  B.end();
+  // colliders: the four walls (door gap left open), the bench; the roof is a camera blocker so the view stays inside
+  col(0, H / 2, -S / 2 + T / 2, S + 0.2, H, 0.3); col(0, H / 2, S / 2 - T / 2, S + 0.2, H, 0.3); col(S / 2 - T / 2, H / 2, 0, 0.3, H, S + 0.2);
+  col(-S / 2 + T / 2, H / 2, (zA + zB) / 2, 0.3, H, zB - zA); col(-S / 2 + T / 2, H / 2, (zC + zD) / 2, 0.3, H, zD - zC);
+  col(bx, 0.3, 0, 0.7, 0.6, S - 2 * T - 0.3);
+  world.addBlocker(X, H + 0.25, zc, S + 0.8, 0.5, S + 0.8);
+  world.addPlatform(X - S / 2, X + S / 2, zc - S / 2, zc + S / 2, 0.1);
+  world.addSeat({ id: `changingBench${i}`, position: w(bx - 0.35, 0.35), facing: -Math.PI / 2, seatHeight: 0.5 });
+  sign('CHANGING ROOM', X - S / 2 - 0.06, 2.62, zc - 0.9, -Math.PI / 2, { w: 2.4, h: 0.5, bg: '#ffffff', fg: i ? '#ff6fb5' : '#3aa8e0', stroke: '#1b5e20', border: i ? '#ff6fb5' : '#3aa8e0' });
+  // the spot at the curtain, outside; the first hut is the Changing Room interactable + landmark
+  const at = w(-S / 2 - 1.1, DZ);
+  if (i === 0) world.landmarks.changingRoom = at;
+  game?.interactables?.push({
+    position: at, radius: 2.2, label: 'Changing Room', sub: 'swimsuits & outfits', kind: 'misc', id: i ? 'changingRoom2' : 'changingRoom',
+    enabled: () => game.player?.state === 'walk',
+    onInteract: () => {
+      if (game.ui?.openChangingRoom) game.ui.openChangingRoom();
+      else if (game.ui?.openDressingRoom) game.ui.openDressingRoom();
+      else game.ui?.toast?.('The changing room is being stocked!');
+    },
+  });
 }
 
 // ---------------- wave pool: coping, ladders, the wave house at the deep end ----------------
@@ -137,9 +185,12 @@ function splashPad({ world, B }) {
     B.end();
   }
   const N = nozzles.length * 6, drops = new THREE.InstancedMesh(new THREE.SphereGeometry(0.1, 6, 4), new THREE.MeshStandardMaterial({ color: 0xcdf3ff, roughness: 0.3 }), N);
-  drops.frustumCulled = false; drops.name = 'splashJets'; world.group.add(drops);
+  const centre = new THREE.Vector3(X, 1.2, Z);
+  drops.boundingSphere = new THREE.Sphere(centre, R + 3);   // the jets stay over the pad: a fixed sphere culls them properly
+  drops.name = 'splashJets'; world.group.add(drops);
   const m = new THREE.Matrix4(), g = 9.8, vy = 4.4, T = (2 * vy) / g, out = 0.5;
   world.animated.push((dt, t) => {
+    if (world.game?.player?.position.distanceTo(centre) > 80) return;   // too far to see the jets move: skip the upload
     for (let j = 0; j < nozzles.length; j++) {
       const [nx, nz, a] = nozzles[j], on = 0.5 + 0.5 * Math.sin(t * 0.9 + j * 0.8) > 0.25; // jets pulse in a slow chase
       for (let k = 0; k < 6; k++) {

@@ -77,6 +77,8 @@ export class ParticleBurst {
   update(dt) {
     const { pos, vel, life } = this;
     let any = false;
+    for (let i = 0; i < this.count; i++) if (life[i] > 0) { any = true; break; }
+    if (!any && !this.mesh.visible) return;   // idle pool: nothing to move, nothing to upload
     for (let i = 0; i < this.count; i++) {
       if (life[i] > 0) {
         any = true;
@@ -92,7 +94,7 @@ export class ParticleBurst {
       this.mesh.setMatrixAt(i, this._m);
     }
     this.mesh.instanceMatrix.needsUpdate = true;
-    this.mesh.visible = any || dt === 0;
+    this.mesh.visible = any;
   }
 }
 

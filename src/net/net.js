@@ -6,9 +6,13 @@
 // Peer protocol (Trystero actions, JSON-serialisable objects):
 //   'join'  { name, config }                                  sent to each peer when they appear, and again when our look
 //                                                             changes (config includes the hand-held item, `held`)
-//   'state' { p:[x,y,z], ry, q?, anim, st, ride, outfit }     ~10 Hz broadcast, only when something changed (1 s heartbeat)
+//   'state' { p:[x,y,z], ry, q?, anim, st, ride, outfit, seat? }  ~10 Hz broadcast, only when something changed (1 s heartbeat)
 //           st   = player.state: 'walk' | 'riding' | 'sit' | 'slide'
 //           ride = ride id while st === 'riding', else null
+//           seat = the chosen seat id on that ride (player.ride.seatId) when the ride offers a choice — informational
+//   'bop'   { to, item }                                      sent to ONE peer (Trystero target) when we bop them with the
+//                                                             balloon / Needoh; `to` = their peer id (ignored if it isn't us)
+// Unknown fields are ignored both ways and every field is optional on receive, so old and new clients mix freely.
 // Peers leaving is detected by Trystero itself (room.onPeerLeave).
 //
 // Remote riders: every client animates its rides on its own clock, so a rider's transmitted position is where THEIR
@@ -17,7 +21,7 @@
 // a stable index among the peers currently on that ride. Drive rides (bikes) have a static arena, so the transmitted
 // transform is right; we parent a `ride.makePeerVehicle()` mesh under the remote avatar so they ride their own bike.
 import * as THREE from 'three';
-import { joinRoom, getRelaySockets } from 'trystero';
+import { joinRoom, getRelaySockets, selfId } from 'trystero';
 import { buildAvatar, DEFAULT_AVATAR, HAIR_STYLES, OUTFITS, ACCESSORIES, HELD_ITEMS } from '../core/avatar.js';
 import { createLobby } from './lobby.js';
 import { CODE_RE, normalizeCode } from './code.js';
@@ -33,6 +37,7 @@ const RELAY_TIMEOUT_MS = 20000, STALE_MS = 30000, LERP = 10;
 /** At most this many remote avatars are drawn (extra peers are tracked but hidden) — keeps a crowded room playable. */
 export const MAX_RENDERED_PEERS = 8;
 const HEX = /^#[0-9a-fA-F]{6}$/;
+const BOP_EMOJI = { balloon: '🎈', needoh: '🟣', wand: '✨', plushie: '🦩' };
 const ANIMS = new Set(['idle', 'walk', 'run', 'jump', 'sit', 'wave', 'drive']);
 const STATES = new Set(['walk', 'riding', 'sit', 'slide']);
 const HELD = Array.isArray(HELD_ITEMS) && HELD_ITEMS.length ? HELD_ITEMS : ['none'];
@@ -41,8 +46,11 @@ export function createNet(game) {
   const peers = new Map(); // peerId -> remote player
   const seatSlots = new Map(); // rideId -> (peerId | null)[]  — which remote rider sits in which peerSeat
   const net = {
-    update, destroy, join, leave,
-    peers,
+    update, destroy, join, leave, bop,
+    peerMap: peers,
+    /** Remote players currently drawn: [{ id, name, position: Vector3 (feet, world), group }] — for hit tests (bop) etc. */
+    peers() { const out = []; for (const p of peers.values()) if (p.group.visible) out.push({ id: p.id, name: p.name, position: p.group.position, group: p.group }); return out; },
+    lastBop: null,             // { from, name, item, at } — the last bop we received (diagnostics / tests)
     connected: false,          // true while in a room and at least one signaling relay is reachable
     roomCode: null,
     status: 'idle',            // 'idle' | 'joining' | 'joined' | 'error'
@@ -54,7 +62,7 @@ export function createNet(game) {
     riders() { const o = {}; for (const [id, arr] of seatSlots) o[id] = arr.map((pid) => (pid ? peers.get(pid)?.name ?? null : null)); return o; },
   };
 
-  let room = null, joinAct = null, stateAct = null, destroyed = false;
+  let room = null, joinAct = null, stateAct = null, bopAct = null, destroyed = false;
   let joinedAt = 0, lastRelayCheck = 0;
   let lastSendAt = -Infinity, lastSent = '', lastConfigJson = '', lastConfigCheck = 0;
   let localAnim = 'idle';
@@ -65,6 +73,8 @@ export function createNet(game) {
   const av = game.player.avatar, origSetAnim = av.setAnim;
   av.setAnim = (state, t, speed) => { localAnim = state; return origSetAnim(state, t, speed); };
   const offOutfit = game.events.on('player:outfit', () => { if (room) sendJoin(); });
+  // The items module decides who got hit ('bop' { targetKind, id, item }); we relay hits on remote players to them.
+  const offBop = game.events.on('bop', (e) => { if (e && e.targetKind === 'peer') bop(e.id, e.item); });
 
   const lobby = createLobby(game, net);
 
@@ -110,6 +120,7 @@ export function createNet(game) {
     joinedAt = performance.now(); lastRelayCheck = 0;
     joinAct = room.makeAction('join');
     stateAct = room.makeAction('state');
+    bopAct = room.makeAction('bop');
     joinAct.onMessage = (data, meta) => {
       const pid = meta?.peerId; if (!validId(pid) || !data || typeof data !== 'object') return;
       const peer = addPeer(pid, data.name, data.config, true);
@@ -121,6 +132,11 @@ export function createNet(game) {
       const pid = meta?.peerId; if (!validId(pid) || !data || typeof data !== 'object') return;
       const peer = peers.get(pid);
       if (peer) applyState(peer, data); else if (pendingState.size < 64) pendingState.set(pid, data);
+    };
+    bopAct.onMessage = (data, meta) => {
+      const pid = meta?.peerId; if (!validId(pid) || !data || typeof data !== 'object') return;
+      if (typeof data.to === 'string' && data.to !== selfId) return; // addressed to someone else (shouldn't happen: sent targeted)
+      receiveBop(pid, data);
     };
     room.onPeerJoin = (pid) => {
       // Introduce ourselves to the newcomer only; they'll do the same for us.
@@ -134,7 +150,7 @@ export function createNet(game) {
 
   function leave({ keepStatus = false } = {}) {
     if (room) { try { room.leave(); } catch {} }
-    room = null; joinAct = null; stateAct = null;
+    room = null; joinAct = null; stateAct = null; bopAct = null;
     pendingState.clear();
     for (const pid of [...peers.keys()]) removePeer(pid, false);
     net.roomCode = null; net.connected = false;
@@ -146,7 +162,7 @@ export function createNet(game) {
   function destroy() {
     destroyed = true;
     leave();
-    offOutfit();
+    offOutfit(); offBop();
     av.setAnim = origSetAnim;
     lobby.destroy();
   }
@@ -178,7 +194,30 @@ export function createNet(game) {
     };
     // On a seat, a slide or mid-fling the body is tilted: ship the full quaternion so the peer sits/flies properly.
     if (riding || pl.fling || st === 'sit' || st === 'slide') { const q = pl.group.quaternion; msg.q = [r3(q.x), r3(q.y), r3(q.z), r3(q.w)]; }
+    // Chosen seat on rides that offer a pick (coaster car, carousel animal...) — informational for now.
+    if (riding && (typeof pl.ride.seatId === 'string' || typeof pl.ride.seatId === 'number')) msg.seat = String(pl.ride.seatId).slice(0, 32);
     return msg;
+  }
+
+  // ---------- bop (balloon / Needoh whack) ----------
+  /** Tell ONE peer we bopped them. Returns false when not in a room or the id is unknown. */
+  function bop(peerId, item) {
+    if (!bopAct || !peers.has(peerId)) return false;
+    item = HELD.includes(item) ? item : 'balloon';
+    try { bopAct.send({ to: peerId, item }, { target: peerId }); } catch (e) { console.warn('[net] bop send failed', e); return false; }
+    return true;
+  }
+  function receiveBop(pid, data) {
+    const peer = peers.get(pid);
+    const name = peer ? peer.name : 'Someone';
+    const item = HELD.includes(data.item) ? data.item : 'balloon';
+    net.lastBop = { from: pid, name, item, at: performance.now() };
+    game.ui?.toast?.(`${name} bopped you! ${BOP_EMOJI[item] || '💥'}`);
+    game.audio?.play?.('bop');
+    try { game.player?.avatar?.bopped?.(); } catch (e) { console.warn('[net] bopped fx', e); }
+    // show their swing on our copy of them too
+    if (peer) { try { peer.avatar.bop?.(); } catch {} }
+    game.events.emit('net:bopped', { peerId: pid, name, item });
   }
 
   // ---------- per frame ----------
@@ -277,7 +316,7 @@ export function createNet(game) {
     peer = {
       id: pid, name, avatar, group, tag, tagBaseY,
       target: group.position.clone(), targetRy: 0, targetQ: null, anim: 'idle', st: 'walk',
-      ride: null, rideObj: null, slot: -1, vehicle: null, seated: false, snap: false,
+      ride: null, rideObj: null, slot: -1, seat: null, vehicle: null, seated: false, snap: false,
       phase: Math.random() * 10, lastSeen: performance.now(),
     };
     peers.set(pid, peer);
@@ -308,6 +347,7 @@ export function createNet(game) {
       try { peer.avatar.setConfig({ outfit: s.outfit }); } catch {}
       peer.tagBaseY = peer.avatar.height + 0.9;
     }
+    peer.seat = rideObj && (typeof s.seat === 'string' || typeof s.seat === 'number') ? String(s.seat).slice(0, 32) : null;
   }
 
   function findRide(id) { return (Array.isArray(game.rides) ? game.rides : []).find((r) => r && r.id === id) || null; }

@@ -61,17 +61,20 @@ Nothing is hardcoded: the princesses' gowns, dialogue and quest text all follow 
 | Dressing room | C | Avatar button |
 | Weather | K | ☀️ button |
 | Sit / stand up | E near a bench, X to stand | ★ / Exit buttons |
-| Use what you're holding | E (eat, squish, wave) | ✦ button |
+| Use what you're holding | E (eat, squish, bop) | ✦ button |
+| Drop what you're holding | Q | Drop button |
 | Mute | M | speaker button |
 
 ## Things to do
 
-- **Rides** — coaster, log flume, carousel, Ferris wheel, teacups (pick a speed, including one that throws you out), Grid Riders light cycles, Thunder Bikes, and the Splash Cove water park (slide + lazy river, swimsuits on automatically).
+- **Rides** — coaster, log flume (with a very big splash), carousel, Ferris wheel, teacups (pick a speed, including one that throws you out), Grid Riders light cycles, Thunder Bikes, and the Splash Cove water park (slide + lazy river, swimsuits on automatically; the changing rooms by the gate let you pick your swimsuit). On the coaster, flume, carousel, Ferris wheel and teacups you pick your seat (front car, favourite animal, cup colour...) and the game remembers it.
 - **Quests and days** — each day has a quest list; finish it and sleep in the bed in your cottage (just outside the south gate) to start the next day with new quests. Day 1 unlocks accessories; later days are sillier (get thrown out of the teacups, ride the coaster at night, make the lifeguard yell...).
-- **Shops** — the Snack Stand and Souvenir Shop by the plaza give out free snacks and toys (a Needoh to squish, a balloon, a glow wand, a plushie). Eating a snack gives a sugar rush.
-- **Playground, flamingo slide, benches** — swings, a slide, a spinner, a seesaw and a climbing frame next to the carousel; a flamingo-shaped slide down from the Flamingo Lookout; every bench and lounger can be sat on.
+- **Shops** — the Snack Stand and Souvenir Shop by the plaza give out free snacks and toys (a Needoh to squish, a balloon, a glow wand, a plushie). Eating a snack gives a sugar rush. Press `Q` to drop what you're holding (Needohs bounce and can be picked up again; balloons float away). Swing the balloon or Needoh at someone with `E` to *bop* them — NPCs complain, and friends in your room get bopped on their screen too.
+- **Royal Keys and the castle** — every day you finish all your quests you earn a Royal Key (🔑 in the HUD). With five keys the castle door opens: a throne room with two thrones to sit on, and a crown for your avatar.
+- **Playground, flamingo slide, benches** — swings, a slide, a spinner (pick gentle / fast / turbo, or ask the Playground Pal for a push — turbo and pushes end with you flying off), a seesaw and a climbing frame next to the carousel; a flamingo-shaped slide down from the Flamingo Lookout; every bench and lounger can be sat on.
 - **Weather** — sunny, cloudy, rain, storm (with lightning), sunset and night, from the ☀️ button or `K`.
 - **Lifeguards** — run near a pool in Splash Cove and you'll hear about it.
+- **Graphics quality** — Auto picks a lighter setting on tablets (the Kingdom tab in the dressing room has Low / Medium / High; `?quality=low` on the URL works too). The game also scales its resolution down on its own when frames get slow, and back up when they recover. `node tools/perf.mjs` prints draw calls, shadow casters and per-system CPU time.
 
 ## Project layout
 
